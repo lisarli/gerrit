@@ -40,6 +40,6 @@ jobs:
 
       - name: Run tests
         run: |
-          bazelisk test --build_tests_only //... \
+          bazelisk test --build_tests_only -- //... \
             -//javatests/com/google/gerrit/common:server_tests \
             -//javatests/com/google/gerrit/util/concurrent:concurrent_tests
