@@ -16,8 +16,15 @@ bazel test //javatests/com/google/gerrit/acceptance/api/revision:RevisionIT --te
 # Run account deletion test (clears both file and line reviewed flags)
 bazel test //javatests/com/google/gerrit/acceptance/api/accounts:api_account --test_filter=".*deleteAccount.*Reviewed.*"
 
-# Run line-level reviewed flags acceptance test (regex: method names containing LineReviewed)
+# Run line-level reviewed flags store test (store-level mark/find/clear)
 bazel test //javatests/com/google/gerrit/acceptance/api/revision:RevisionIT --test_filter=".*LineReviewed.*"
+
+# Run HTTP-level acceptance tests for reviewed_lines REST endpoints
+# (PUT/GET/DELETE success and error cases)
+bazel test //javatests/com/google/gerrit/acceptance/api/revision:RevisionIT --test_filter=".*[Rr]eviewedLines.*"
+
+# Run JDBC unit tests (exercises real SQL against an in-memory H2 database)
+bazel test //javatests/com/google/gerrit/server:server_tests --test_filter=JdbcAccountPatchLineReviewStoreTest
 ```
 
 ## 2. Manual verification via REST API
@@ -144,6 +151,14 @@ After marking a line or region, query the table and confirm a row exists for the
 - **Cleanup:** Line-level flags are cleared when: the change is deleted, the account is deleted, the patch set is deleted (consistency checker), or (when configured) changes are abandoned. Confirm this matches your expectations.
 - **UI:** The current change only adds backend storage and REST API. Polygerrit (or another UI) would need to call these endpoints and show line/region reviewed state; that is separate work.
 
-## 5. Optional: add an acceptance test
+## 5. Test coverage summary
 
-An acceptance test can create a change, mark a line as reviewed via REST with a body, then assert via the store or GET that the flag is present, and clear it and assert it’s gone. See `RevisionIT.setUnsetReviewedFlag` for the file-level pattern; the line-level test would use `restSession.put(uri, lineReviewedInput)` and `restSession.get(uri)` for `.../reviewed_lines`.
+The following tests cover the line-level reviewed flags feature:
+
+| Test | What it covers |
+|---|---|
+| `JdbcAccountPatchLineReviewStoreTest` | Real SQL: INSERT, SELECT, DELETE; idempotency; isolation by account/patchset/file; range storage; `clearLineReviewed(PatchSet.Id)`, `clearLineReviewed(Change.Id)`, `clearLineReviewedBy(Account.Id)` |
+| `RevisionIT#setUnsetLineReviewedFlag` | Store-level mark + find + clear via injected store |
+| `RevisionIT#putReviewedLines_*` / `getReviewedLines_*` / `deleteReviewedLines_*` | Full HTTP round-trip: PUT (new → 201, repeat → 200), GET (empty list, single line, with range, PARENT side), error cases (line=0 → 400, missing body → 400), DELETE without body → 400 |
+| `ChangesRestApiBindingsIT#revisionFileEndpoints` | Route binding: GET/PUT/DELETE `.../reviewed_lines` are registered and reachable |
+| `AccountIT#deleteAccount_deletesReviewedFlags` (file-level only) | Verifies that deleting an account clears file-level reviewed flags; the same code path clears line-level flags via `clearLineReviewedBy` |

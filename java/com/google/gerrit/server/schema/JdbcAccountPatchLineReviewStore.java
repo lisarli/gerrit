@@ -107,6 +107,23 @@ public abstract class JdbcAccountPatchLineReviewStore
     this.ds = createDataSource(cfg, sitePaths, threadSettingsConfig);
   }
 
+  @VisibleForTesting
+  protected JdbcAccountPatchLineReviewStore(DataSource dataSource) {
+    this.ds = dataSource;
+  }
+
+  @VisibleForTesting
+  public static H2AccountPatchLineReviewStore createInMemoryForTesting() {
+    BasicDataSource ds = new BasicDataSource();
+    ds.setUrl(TEST_IN_MEMORY_URL);
+    ds.setDriverClassName("org.h2.Driver");
+    ds.setMaxActive(4);
+    ds.setMinIdle(1);
+    ds.setMaxIdle(4);
+    ds.setInitialSize(1);
+    return new H2AccountPatchLineReviewStore(ds);
+  }
+
   private static String getUrl(@GerritServerConfig Config cfg, SitePaths sitePaths) {
     String url = cfg.getString(ACCOUNT_PATCH_LINE_REVIEW_DB, null, URL);
     if (url == null) {
@@ -376,6 +393,22 @@ public abstract class JdbcAccountPatchLineReviewStore
   }
 
   @Override
+  public void clearLineReviewedBy(Account.Id accountId) {
+    try (TraceTimer ignored =
+            TraceContext.newTimer(
+                "Clear all line reviewed flags of account",
+                Metadata.builder().accountId(accountId.get()).build());
+        Connection con = ds.getConnection();
+        PreparedStatement stmt =
+            con.prepareStatement("DELETE FROM account_patch_line_reviews WHERE account_id = ?")) {
+      stmt.setInt(1, accountId.get());
+      stmt.executeUpdate();
+    } catch (SQLException e) {
+      throw convertError("delete", e);
+    }
+  }
+
+  @Override
   public Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path) {
     try (TraceTimer ignored =
@@ -394,31 +427,32 @@ public abstract class JdbcAccountPatchLineReviewStore
         sql += " AND file_name = ?";
       }
       sql += " ORDER BY file_name, line_number";
-      PreparedStatement stmt = con.prepareStatement(sql);
-      stmt.setInt(1, accountId.get());
-      stmt.setInt(2, psId.changeId().get());
-      stmt.setInt(3, psId.get());
-      if (path != null) {
-        stmt.setString(4, path);
-      }
-      try (ResultSet rs = stmt.executeQuery()) {
-        ImmutableList.Builder<ReviewedLine> builder = ImmutableList.builder();
-        while (rs.next()) {
-          builder.add(
-              ReviewedLine.create(
-                  rs.getString("file_name"),
-                  rs.getInt("line_number"),
-                  rs.getShort("side"),
-                  rs.getInt("start_line"),
-                  rs.getInt("start_char"),
-                  rs.getInt("end_line"),
-                  rs.getInt("end_char")));
+      try (PreparedStatement stmt = con.prepareStatement(sql)) {
+        stmt.setInt(1, accountId.get());
+        stmt.setInt(2, psId.changeId().get());
+        stmt.setInt(3, psId.get());
+        if (path != null) {
+          stmt.setString(4, path);
         }
-        ImmutableList<ReviewedLine> lines = builder.build();
-        if (lines.isEmpty()) {
-          return Optional.empty();
+        try (ResultSet rs = stmt.executeQuery()) {
+          ImmutableList.Builder<ReviewedLine> builder = ImmutableList.builder();
+          while (rs.next()) {
+            builder.add(
+                ReviewedLine.create(
+                    rs.getString("file_name"),
+                    rs.getInt("line_number"),
+                    rs.getShort("side"),
+                    rs.getInt("start_line"),
+                    rs.getInt("start_char"),
+                    rs.getInt("end_line"),
+                    rs.getInt("end_char")));
+          }
+          ImmutableList<ReviewedLine> lines = builder.build();
+          if (lines.isEmpty()) {
+            return Optional.empty();
+          }
+          return Optional.of(PatchSetWithReviewedLines.create(psId, lines));
         }
-        return Optional.of(PatchSetWithReviewedLines.create(psId, lines));
       }
     } catch (SQLException e) {
       throw convertError("select", e);

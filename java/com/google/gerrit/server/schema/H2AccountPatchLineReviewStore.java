@@ -14,6 +14,7 @@
 
 package com.google.gerrit.server.schema;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.gerrit.exceptions.DuplicateKeyException;
 import com.google.gerrit.exceptions.StorageException;
 import com.google.gerrit.server.config.GerritServerConfig;
@@ -22,6 +23,7 @@ import com.google.gerrit.server.config.ThreadSettingsConfig;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import java.sql.SQLException;
+import javax.sql.DataSource;
 import org.eclipse.jgit.lib.Config;
 
 @Singleton
@@ -33,6 +35,11 @@ public class H2AccountPatchLineReviewStore extends JdbcAccountPatchLineReviewSto
       SitePaths sitePaths,
       ThreadSettingsConfig threadSettingsConfig) {
     super(cfg, sitePaths, threadSettingsConfig);
+  }
+
+  @VisibleForTesting
+  H2AccountPatchLineReviewStore(DataSource dataSource) {
+    super(dataSource);
   }
 
   @Override
