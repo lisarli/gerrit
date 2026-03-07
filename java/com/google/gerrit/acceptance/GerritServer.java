@@ -66,6 +66,7 @@ import com.google.gerrit.server.git.receive.AsyncReceiveCommits.AsyncReceiveComm
 import com.google.gerrit.server.git.validators.CommitValidationListener;
 import com.google.gerrit.server.index.AbstractIndexModule;
 import com.google.gerrit.server.index.options.AutoFlush;
+import com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore;
 import com.google.gerrit.server.schema.JdbcAccountPatchReviewStore;
 import com.google.gerrit.server.ssh.NoSshModule;
 import com.google.gerrit.server.util.ReplicaUtil;
@@ -506,6 +507,11 @@ public class GerritServer implements AutoCloseable {
     cfg.setString("gitweb", null, "cgi", "");
     cfg.setString(
         "accountPatchReviewDb", null, "url", JdbcAccountPatchReviewStore.TEST_IN_MEMORY_URL);
+    cfg.setString(
+        "accountPatchLineReviewDb",
+        null,
+        "url",
+        JdbcAccountPatchLineReviewStore.TEST_IN_MEMORY_URL);
 
     String configuredIndexBackend = cfg.getString("index", null, "type");
     IndexType indexType =

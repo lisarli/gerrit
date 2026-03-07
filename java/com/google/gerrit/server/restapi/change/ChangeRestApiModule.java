@@ -157,6 +157,8 @@ public class ChangeRestApiModule extends RestApiModule {
     get(FILE_KIND, "download").to(DownloadContent.class);
     put(FILE_KIND, "reviewed").to(PutReviewed.class);
     delete(FILE_KIND, "reviewed").to(DeleteReviewed.class);
+    put(FILE_KIND, "line-markers").to(LineMarkers.PutLineMarker.class);
+    get(FILE_KIND, "line-markers").to(LineMarkers.GetLineMarkers.class);
 
     child(REVISION_KIND, "fixes").to(Fixes.class);
     post(FIX_KIND, "apply").to(ApplyStoredFix.class);
