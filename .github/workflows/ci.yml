@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  bazel-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Install Bazelisk
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -L -o "$HOME/.local/bin/bazelisk" \
+            https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+          chmod +x "$HOME/.local/bin/bazelisk"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bazelisk version
+
+      - name: Cache Bazel
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/bazel
+            ~/.cache/bazelisk
+          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/MODULE.bazel.lock', '**/WORKSPACE', '**/WORKSPACE.bzlmod', '**/.bazelrc') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-
+
+      - name: Run tests
+        run: |
+          bazelisk test --build_tests_only -- //... \
+            -//javatests/com/google/gerrit/common:server_tests \
+            -//javatests/com/google/gerrit/util/concurrent:concurrent_tests
