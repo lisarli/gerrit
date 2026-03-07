@@ -485,6 +485,23 @@ multiple primary servers handling write operations where reviewed flags should
 be replicated between the primary nodes one could implement a store for the
 reviewed flags that is based on MySQL with replication.
 
+[[line-reviewed-flags]]
+=== Line/Region Reviewed Flags
+
+In addition to file-level reviewed flags, reviewers can mark individual
+lines or character ranges within a file as reviewed. These line-level
+(and region-level) reviewed flags are stored in a separate database table
+`account_patch_line_reviews`. The table holds: account ID, change ID,
+patch set ID, file path, line number (1-based), side (PARENT/REVISION),
+and optional range (start_line, start_char, end_line, end_char), matching
+the attributes used for comments.
+
+By default the same database as file-level reviewed flags is used (see
+`accountPatchReviewDb`). To use a different database, set
+`accountPatchLineReviewDb.url` in `gerrit.config`. Plugins can provide
+an alternate implementation by implementing
+`AccountPatchLineReviewStore`.
+
 [[account-sequence]]
 == Account Sequence
 

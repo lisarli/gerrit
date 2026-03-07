@@ -31,6 +31,7 @@ import com.google.gerrit.extensions.registration.DynamicMap;
 import com.google.gerrit.extensions.restapi.RestApiModule;
 import com.google.gerrit.server.restapi.change.Reviewed.DeleteReviewed;
 import com.google.gerrit.server.restapi.change.Reviewed.PutReviewed;
+import com.google.gerrit.server.restapi.change.ReviewedLines;
 
 public class ChangeRestApiModule extends RestApiModule {
   @Override
@@ -157,6 +158,9 @@ public class ChangeRestApiModule extends RestApiModule {
     get(FILE_KIND, "download").to(DownloadContent.class);
     put(FILE_KIND, "reviewed").to(PutReviewed.class);
     delete(FILE_KIND, "reviewed").to(DeleteReviewed.class);
+    get(FILE_KIND, "reviewed_lines").to(ReviewedLines.GetReviewedLines.class);
+    put(FILE_KIND, "reviewed_lines").to(ReviewedLines.PutReviewedLine.class);
+    delete(FILE_KIND, "reviewed_lines").to(ReviewedLines.DeleteReviewedLine.class);
 
     child(REVISION_KIND, "fixes").to(Fixes.class);
     post(FIX_KIND, "apply").to(ApplyStoredFix.class);

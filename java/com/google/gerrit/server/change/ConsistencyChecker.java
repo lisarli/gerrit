@@ -109,6 +109,7 @@ public class ConsistencyChecker {
 
   private final ChangeNotes.Factory notesFactory;
   private final Accounts accounts;
+  private final PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore;
   private final PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore;
   private final GitRepositoryManager repoManager;
   private final PatchSetInfoFactory patchSetInfoFactory;
@@ -138,6 +139,7 @@ public class ConsistencyChecker {
       @GerritPersonIdent Provider<PersonIdent> serverIdent,
       ChangeNotes.Factory notesFactory,
       Accounts accounts,
+      PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore,
       PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore,
       GitRepositoryManager repoManager,
       PatchSetInfoFactory patchSetInfoFactory,
@@ -147,6 +149,7 @@ public class ConsistencyChecker {
       RetryHelper retryHelper,
       ChangeUtil changeUtil) {
     this.accounts = accounts;
+    this.accountPatchLineReviewStore = accountPatchLineReviewStore;
     this.accountPatchReviewStore = accountPatchReviewStore;
     this.notesFactory = notesFactory;
     this.patchSetInfoFactory = patchSetInfoFactory;
@@ -702,6 +705,7 @@ public class ConsistencyChecker {
     @Override
     public boolean updateChange(ChangeContext ctx) throws PatchSetInfoNotAvailableException {
       // Delete dangling key references.
+      accountPatchLineReviewStore.run(s -> s.clearLineReviewed(psId));
       accountPatchReviewStore.run(s -> s.clearReviewed(psId));
 
       // For NoteDb setting the state to deleted is sufficient to filter everything out.

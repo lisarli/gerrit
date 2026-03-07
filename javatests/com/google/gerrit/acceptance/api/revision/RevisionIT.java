@@ -56,6 +56,8 @@ import com.google.gerrit.acceptance.testsuite.account.AccountOperations;
 import com.google.gerrit.acceptance.testsuite.change.ChangeOperations;
 import com.google.gerrit.acceptance.testsuite.project.ProjectOperations;
 import com.google.gerrit.acceptance.testsuite.request.RequestScopeOperations;
+import com.google.gerrit.acceptance.testsuite.project.ProjectOperations;
+import com.google.gerrit.acceptance.testsuite.request.RequestScopeOperations;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.BranchNameKey;
 import com.google.gerrit.entities.BranchOrderSection;
@@ -66,6 +68,10 @@ import com.google.gerrit.entities.PatchSetApproval;
 import com.google.gerrit.entities.Permission;
 import com.google.gerrit.entities.Project;
 import com.google.gerrit.entities.RefNames;
+import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.Side;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.extensions.api.changes.ChangeApi;
 import com.google.gerrit.extensions.api.changes.CherryPickInput;
 import com.google.gerrit.extensions.api.changes.DraftApi;
@@ -138,6 +144,7 @@ public class RevisionIT extends AbstractDaemonTest {
   @Inject private ExtensionRegistry extensionRegistry;
   @Inject private AccountOperations accountOperations;
   @Inject private ChangeOperations changeOperations;
+  @Inject private AccountPatchLineReviewStore accountPatchLineReviewStore;
 
   @Test
   public void get() throws Exception {
@@ -1691,6 +1698,36 @@ public class RevisionIT extends AbstractDaemonTest {
     gApi.changes().id(r.getChangeId()).current().setReviewed(PushOneCommit.FILE_NAME, false);
 
     assertThat(gApi.changes().id(r.getChangeId()).current().reviewed()).isEmpty();
+  }
+
+  @Test
+  public void setUnsetLineReviewedFlag() throws Exception {
+    PushOneCommit push = pushFactory.create(admin.newIdent(), testRepo);
+    PushOneCommit.Result r = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isPresent();
+    assertThat(found.get().lines()).hasSize(1);
+    assertThat(found.get().lines().get(0).lineNumber()).isEqualTo(1);
+    assertThat(found.get().lines().get(0).path()).isEqualTo(PushOneCommit.FILE_NAME);
+
+    accountPatchLineReviewStore.clearLineReviewed(
+        r.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isEmpty();
   }
 
   @Test

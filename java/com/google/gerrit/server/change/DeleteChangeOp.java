@@ -48,6 +48,7 @@ public class DeleteChangeOp implements BatchUpdateOp {
 
   private final PatchSetUtil psUtil;
   private final StarredChangesWriter starredChangesWriter;
+  private final PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore;
   private final PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore;
   private final ChangeData.Factory changeDataFactory;
   private final ChangeDeleted changeDeleted;
@@ -57,12 +58,14 @@ public class DeleteChangeOp implements BatchUpdateOp {
   DeleteChangeOp(
       PatchSetUtil psUtil,
       StarredChangesWriter starredChangesWriter,
+      PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore,
       PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore,
       ChangeData.Factory changeDataFactory,
       ChangeDeleted changeDeleted,
       @Assisted Change.Id id) {
     this.psUtil = psUtil;
     this.starredChangesWriter = starredChangesWriter;
+    this.accountPatchLineReviewStore = accountPatchLineReviewStore;
     this.accountPatchReviewStore = accountPatchReviewStore;
     this.changeDataFactory = changeDataFactory;
     this.changeDeleted = changeDeleted;
@@ -122,6 +125,7 @@ public class DeleteChangeOp implements BatchUpdateOp {
   }
 
   private void cleanUpReferences(ChangeData cd) throws IOException {
+    accountPatchLineReviewStore.run(s -> s.clearLineReviewed(cd.getId()));
     accountPatchReviewStore.run(s -> s.clearReviewed(cd.virtualId()));
 
     // Non-atomic operation on All-Users refs; not much we can do to make it atomic.

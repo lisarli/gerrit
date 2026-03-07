@@ -71,6 +71,7 @@ import com.google.gerrit.server.ssh.NoSshModule;
 import com.google.gerrit.server.util.ReplicaUtil;
 import com.google.gerrit.server.util.SocketUtil;
 import com.google.gerrit.server.util.SystemLog;
+import com.google.gerrit.testing.FakeAccountPatchLineReviewStore;
 import com.google.gerrit.testing.FakeAccountPatchReviewStore.FakeAccountPatchReviewStoreModule;
 import com.google.gerrit.testing.FakeEmailSender.FakeEmailSenderModule;
 import com.google.gerrit.testing.GitRepositoryCountingManagerModule;
@@ -431,6 +432,8 @@ public class GerritServer implements AutoCloseable {
               }
             },
             site);
+    daemon.setAccountPatchLineReviewStoreModuleForTesting(
+        new FakeAccountPatchLineReviewStore.FakeAccountPatchLineReviewStoreModule());
     daemon.setAccountPatchReviewStoreModuleForTesting(new FakeAccountPatchReviewStoreModule());
     daemon.setEmailModuleForTesting(new FakeEmailSenderModule());
     daemon.setAuditEventModuleForTesting(
