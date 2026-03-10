@@ -15,6 +15,7 @@ import '../../shared/gr-weblink/gr-weblink';
 import '../../shared/revision-info/revision-info';
 import '../gr-apply-fix-dialog/gr-apply-fix-dialog';
 import '../gr-diff-host/gr-diff-host';
+import '../gr-line-review-marker/gr-line-review-marker';
 import '../gr-diff-mode-selector/gr-diff-mode-selector';
 import '../gr-diff-preferences-dialog/gr-diff-preferences-dialog';
 import '../gr-patch-range-select/gr-patch-range-select';
@@ -49,7 +50,11 @@ import {
   RevisionPatchSetNum,
 } from '../../../types/common';
 import {DiffInfo, DiffPreferencesInfo, WebLinkInfo} from '../../../types/diff';
-import {ParsedChangeInfo} from '../../../types/types';
+import {
+  DiffLayer,
+  DiffLayerListener,
+  ParsedChangeInfo,
+} from '../../../types/types';
 import {
   FilesWebLinks,
   PatchRangeChangeEvent,
@@ -73,6 +78,8 @@ import {
 import {
   DisplayLine,
   FileRange,
+  GrDiffLine,
+  GrDiffLineType,
   LineSelectedEventDetail,
 } from '../../../api/diff';
 import {GrDownloadDialog} from '../../change/gr-download-dialog/gr-download-dialog';
@@ -99,6 +106,7 @@ import {
   FileNameToNormalizedFileInfoMap,
   filesModelToken,
 } from '../../../models/change/files-model';
+import {LineMarkerToggledEvent} from '../gr-line-review-marker/gr-line-review-marker';
 import {isImageDiff} from '../../../utils/diff-util';
 import {formStyles} from '../../../styles/form-styles';
 import {NormalizedFileInfo} from '../../change/gr-file-list/gr-file-list';
@@ -122,6 +130,136 @@ export interface Files {
   /** All file paths sorted by `specialFilePathCompare`. */
   sortedPaths: string[];
   changeFilesByPath: FileNameToNormalizedFileInfoMap;
+}
+
+type LineReadStatus = 'read' | 'tentative' | 'unread';
+
+class LineReadStatusLayer implements DiffLayer {
+  private listeners: DiffLayerListener[] = [];
+
+  private markedLines = new Set<string>();
+
+  private explicitlyUnreadLines = new Set<string>();
+
+  private dragState?: {path: string; marked: boolean};
+
+  constructor(
+    private readonly getPath: () => string | undefined,
+    private readonly onToggle: (path: string, lineNum: number, marked: boolean) => void
+  ) {}
+
+  addListener(listener: DiffLayerListener) {
+    this.listeners.push(listener);
+  }
+
+  removeListener(listener: DiffLayerListener) {
+    this.listeners = this.listeners.filter(l => l !== listener);
+  }
+
+  annotate(
+    _textEl: HTMLElement,
+    lineNumberEl: HTMLElement,
+    line: GrDiffLine,
+    side: Side
+  ) {
+    if (side !== Side.RIGHT) return;
+    const dataValue = lineNumberEl.getAttribute('data-value');
+    const lineNum = dataValue ? Number(dataValue) : NaN;
+    if (!Number.isInteger(lineNum) || lineNum <= 0) return;
+
+    const status = this.computeStatus(lineNum, line);
+    let indicator = lineNumberEl.querySelector<HTMLElement>(
+      '.lineReadStatusIndicator'
+    );
+    if (!indicator) {
+      indicator = document.createElement('button');
+      indicator.className = 'lineReadStatusIndicator';
+      indicator.setAttribute('aria-hidden', 'true');
+      indicator.setAttribute('type', 'button');
+      indicator.style.position = 'absolute';
+      indicator.style.left = '4px';
+      indicator.style.top = '50%';
+      indicator.style.transform = 'translateY(-50%)';
+      indicator.style.width = '8px';
+      indicator.style.height = '8px';
+      indicator.style.borderRadius = '50%';
+      indicator.style.padding = '0';
+      indicator.style.border = '0';
+      indicator.style.outline = 'none';
+      indicator.style.cursor = 'pointer';
+      indicator.style.boxShadow = 'none';
+      indicator.style.zIndex = '1';
+      lineNumberEl.style.position = 'relative';
+      lineNumberEl.append(indicator);
+    }
+    indicator.style.backgroundColor = this.getStatusColor(status);
+    indicator.title = this.getStatusTitle(status);
+    indicator.setAttribute('aria-label', this.getStatusTitle(status));
+    indicator.onmousedown = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const path = this.getPath();
+      if (!path) return;
+      const marked = status !== 'read';
+      this.dragState = {path, marked};
+      this.onToggle(path, lineNum, marked);
+    };
+    indicator.onmouseenter = event => {
+      if ((event.buttons & 1) !== 1 || !this.dragState) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (this.dragState.path !== (this.getPath() ?? '')) return;
+      this.onToggle(this.dragState.path, lineNum, this.dragState.marked);
+    };
+    indicator.onclick = event => {
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.onmouseup = () => {
+      this.dragState = undefined;
+    };
+  }
+
+  setMarked(path: string, lineNum: number, marked: boolean) {
+    const key = this.computeKey(path, lineNum);
+    if (marked) {
+      this.markedLines.add(key);
+      this.explicitlyUnreadLines.delete(key);
+    } else {
+      this.markedLines.delete(key);
+      this.explicitlyUnreadLines.add(key);
+    }
+    for (const listener of this.listeners) {
+      listener(lineNum, lineNum, Side.RIGHT);
+    }
+  }
+
+  private computeStatus(lineNum: number, line: GrDiffLine): LineReadStatus {
+    const key = this.computeKey(this.getPath() ?? '', lineNum);
+    if (this.markedLines.has(key)) {
+      return 'read';
+    }
+    if (this.explicitlyUnreadLines.has(key)) {
+      return 'unread';
+    }
+    return line.type === GrDiffLineType.BOTH ? 'tentative' : 'unread';
+  }
+
+  private computeKey(path: string, lineNum: number) {
+    return `${path}:${lineNum}`;
+  }
+
+  private getStatusColor(status: LineReadStatus) {
+    if (status === 'read') return '#34a853';
+    if (status === 'tentative') return '#fbbc04';
+    return '#9aa0a6';
+  }
+
+  private getStatusTitle(status: LineReadStatus) {
+    if (status === 'read') return 'Read';
+    if (status === 'tentative') return 'Tentatively read';
+    return 'Unread';
+  }
 }
 
 @customElement('gr-diff-view')
@@ -251,8 +389,16 @@ export class GrDiffView extends LitElement {
   @state()
   isShowingEntireFile = false;
 
+  @state()
+  private selectedDiffLine?: DisplayLine;
+
   // visible for testing
   reviewedFiles = new Set<string>();
+
+  private readonly lineReadStatusLayer = new LineReadStatusLayer(
+    () => this.path,
+    (path, lineNum, marked) => this.lineReadStatusLayer.setMarked(path, lineNum, marked)
+  );
 
   private readonly reporting = getAppContext().reportingService;
 
@@ -704,6 +850,10 @@ export class GrDiffView extends LitElement {
         .diffContainer.sidebarOpen {
           margin-left: var(--sidebar-width);
         }
+        .lineReviewMarker {
+          display: flex;
+          justify-content: flex-end;
+        }
         .sidebarTriggerContainer {
           display: inline-block;
           margin-right: var(--spacing-m);
@@ -844,6 +994,14 @@ export class GrDiffView extends LitElement {
       ${this.renderStickyHeader()}
       <h2 class="assistive-tech-only">Diff view</h2>
       <div class="diffContainer ${this.shownSidebar && 'sidebarOpen'}">
+        <div class="lineReviewMarker">
+          <gr-line-review-marker
+            .selectedLine=${this.selectedDiffLine}
+            .path=${this.path}
+            .disabled=${!this.loggedIn}
+            @line-marker-toggled=${this.onLineMarkerToggled}
+          ></gr-line-review-marker>
+        </div>
         <gr-diff-host
           id="diffHost"
           .changeNum=${this.changeNum}
@@ -853,6 +1011,7 @@ export class GrDiffView extends LitElement {
           .lineOfInterest=${this.getLineOfInterest()}
           .path=${this.path}
           .projectName=${this.change?.project}
+          .extraLayers=${[this.lineReadStatusLayer]}
           @is-blame-loaded-changed=${this.onIsBlameLoadedChanged}
           @comment-anchor-tap=${this.onCommentAnchorTap}
           @line-selected=${this.onLineSelected}
@@ -1671,7 +1830,20 @@ export class GrDiffView extends LitElement {
   onLineSelected(e: CustomEvent<LineSelectedEventDetail>) {
     const lineNumber = e.detail.number;
     if (!Number.isInteger(lineNumber)) return;
+    this.selectedDiffLine = {
+      lineNum: lineNumber as number,
+      side: e.detail.side,
+    };
     this.updateUrlToDiffUrl(lineNumber as number, e.detail.side === Side.LEFT);
+  }
+
+  private onLineMarkerToggled(e: LineMarkerToggledEvent) {
+    if (typeof e.detail.lineNum !== 'number') return;
+    this.lineReadStatusLayer.setMarked(
+      e.detail.path,
+      e.detail.lineNum,
+      e.detail.marked
+    );
   }
 
   private isTooLargeForDownload() {
