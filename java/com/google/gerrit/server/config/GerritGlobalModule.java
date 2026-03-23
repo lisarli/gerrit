@@ -120,6 +120,7 @@ import com.google.gerrit.server.avatar.AvatarProvider;
 import com.google.gerrit.server.cache.CacheDef;
 import com.google.gerrit.server.cache.CacheRemovalListener;
 import com.google.gerrit.server.change.AbandonOp;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.AccountPatchReviewStore;
 import com.google.gerrit.server.change.ChangeFinder;
 import com.google.gerrit.server.change.ChangeJson;
@@ -462,6 +463,7 @@ public class GerritGlobalModule extends FactoryModule {
     DynamicItem.itemOf(binder(), OAuthTokenEncrypter.class);
     DynamicSet.setOf(binder(), AccountExternalIdCreator.class);
     DynamicSet.setOf(binder(), WebUiPlugin.class);
+    DynamicItem.itemOf(binder(), AccountPatchLineReviewStore.class);
     DynamicItem.itemOf(binder(), AccountPatchReviewStore.class);
     DynamicSet.setOf(binder(), ActionVisitor.class);
     DynamicItem.itemOf(binder(), MergeSuperSetComputation.class);

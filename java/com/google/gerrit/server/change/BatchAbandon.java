@@ -37,6 +37,7 @@ import java.util.Collection;
 public class BatchAbandon {
   private final AbandonOp.Factory abandonOpFactory;
   private final ChangeCleanupConfig cfg;
+  private final PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore;
   private final PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore;
   private final StoreSubmitRequirementsOp.Factory storeSubmitRequirementsOpFactory;
 
@@ -44,10 +45,12 @@ public class BatchAbandon {
   BatchAbandon(
       AbandonOp.Factory abandonOpFactory,
       ChangeCleanupConfig cfg,
+      PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore,
       PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore,
       StoreSubmitRequirementsOp.Factory storeSubmitRequirementsOpFactory) {
     this.abandonOpFactory = abandonOpFactory;
     this.cfg = cfg;
+    this.accountPatchLineReviewStore = accountPatchLineReviewStore;
     this.accountPatchReviewStore = accountPatchReviewStore;
     this.storeSubmitRequirementsOpFactory = storeSubmitRequirementsOpFactory;
   }
@@ -91,6 +94,7 @@ public class BatchAbandon {
 
         if (cfg.getCleanupAccountPatchReview()) {
           cleanupAccountPatchReview(changes);
+          cleanupAccountPatchLineReview(changes);
         }
       }
     }
@@ -118,6 +122,12 @@ public class BatchAbandon {
   private void cleanupAccountPatchReview(Collection<ChangeData> changes) {
     for (ChangeData change : changes) {
       accountPatchReviewStore.run(s -> s.clearReviewed(change.getId()));
+    }
+  }
+
+  private void cleanupAccountPatchLineReview(Collection<ChangeData> changes) {
+    for (ChangeData change : changes) {
+      accountPatchLineReviewStore.run(s -> s.clearLineReviewed(change.getId()));
     }
   }
 }

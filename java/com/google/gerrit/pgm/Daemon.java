@@ -121,6 +121,7 @@ import com.google.gerrit.server.plugins.PluginGuiceEnvironment;
 import com.google.gerrit.server.plugins.PluginModule;
 import com.google.gerrit.server.project.DefaultLockManager.DefaultLockManagerModule;
 import com.google.gerrit.server.restapi.RestApiModule;
+import com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore.JdbcAccountPatchLineReviewStoreModule;
 import com.google.gerrit.server.schema.JdbcAccountPatchReviewStore.JdbcAccountPatchReviewStoreModule;
 import com.google.gerrit.server.schema.NoteDbSchemaVersionCheck;
 import com.google.gerrit.server.securestore.DefaultSecureStore;
@@ -233,6 +234,7 @@ public class Daemon extends SiteProgram {
   private Path runFile;
   private boolean inMemoryTest;
   private AbstractModule indexModule;
+  private Module accountPatchLineReviewStoreModule;
   private Module accountPatchReviewStoreModule;
   private Module emailModule;
   private List<Module> testSysModules = new ArrayList<>();
@@ -365,6 +367,11 @@ public class Daemon extends SiteProgram {
   }
 
   @VisibleForTesting
+  public void setAccountPatchLineReviewStoreModuleForTesting(Module module) {
+    accountPatchLineReviewStoreModule = module;
+  }
+
+  @VisibleForTesting
   public void setAccountPatchReviewStoreModuleForTesting(Module module) {
     accountPatchReviewStoreModule = module;
   }
@@ -487,6 +494,11 @@ public class Daemon extends SiteProgram {
     modules.add(new WorkQueueModule());
     modules.add(new StreamEventsApiListenerModule(config));
     modules.add(new EventBrokerModule());
+    if (accountPatchLineReviewStoreModule != null) {
+      modules.add(accountPatchLineReviewStoreModule);
+    } else {
+      modules.add(new JdbcAccountPatchLineReviewStoreModule(config));
+    }
     if (accountPatchReviewStoreModule != null) {
       modules.add(accountPatchReviewStoreModule);
     } else {

@@ -43,6 +43,7 @@ import com.google.gerrit.server.account.AccountSshKey;
 import com.google.gerrit.server.account.AccountsUpdate;
 import com.google.gerrit.server.account.AuthTokenAccessor;
 import com.google.gerrit.server.account.VersionedAuthorizedKeys;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.AccountPatchReviewStore;
 import com.google.gerrit.server.config.AccountConfig;
 import com.google.gerrit.server.edit.ChangeEdit;
@@ -90,6 +91,7 @@ public class DeleteAccount implements RestModifyView<AccountResource, Input> {
   private final GitRepositoryManager gitManager;
   private final Provider<InternalChangeQuery> queryProvider;
   private final ChangeEditUtil changeEditUtil;
+  private final PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore;
   private final PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore;
   private final PublicKeyStoreUtil publicKeyStoreUtil;
   private final AccountConfig accountConfig;
@@ -110,6 +112,7 @@ public class DeleteAccount implements RestModifyView<AccountResource, Input> {
       GitRepositoryManager gitManager,
       Provider<InternalChangeQuery> queryProvider,
       ChangeEditUtil changeEditUtil,
+      PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore,
       PluginItemContext<AccountPatchReviewStore> accountPatchReviewStore,
       PublicKeyStoreUtil publicKeyStoreUtil,
       AccountConfig accountConfig,
@@ -125,6 +128,7 @@ public class DeleteAccount implements RestModifyView<AccountResource, Input> {
     this.gitManager = gitManager;
     this.queryProvider = queryProvider;
     this.changeEditUtil = changeEditUtil;
+    this.accountPatchLineReviewStore = accountPatchLineReviewStore;
     this.accountPatchReviewStore = accountPatchReviewStore;
     this.publicKeyStoreUtil = publicKeyStoreUtil;
     this.accountConfig = accountConfig;
@@ -152,6 +156,7 @@ public class DeleteAccount implements RestModifyView<AccountResource, Input> {
       deleteChangeEdits(userId);
       tokenAccessor.deleteAllTokens(user.getAccountId());
       deleteDraftCommentsUtil.deleteDraftComments(user, null);
+      accountPatchLineReviewStore.run(a -> a.clearLineReviewedBy(userId));
       accountPatchReviewStore.run(a -> a.clearReviewedBy(userId));
       removeUserFromGroups(user);
       accountsUpdateProvider

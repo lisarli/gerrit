@@ -121,6 +121,7 @@ import com.google.gerrit.server.query.change.ChangeNumberBitmapMaskAlgorithm;
 import com.google.gerrit.server.query.change.ChangeNumberNoopAlgorithm;
 import com.google.gerrit.server.query.change.ChangeNumberVirtualIdAlgorithm;
 import com.google.gerrit.server.restapi.RestApiModule;
+import com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore;
 import com.google.gerrit.server.schema.JdbcAccountPatchReviewStore;
 import com.google.gerrit.server.schema.SchemaCreator;
 import com.google.gerrit.server.schema.SchemaCreatorImpl;
@@ -159,6 +160,9 @@ public class InMemoryModule extends FactoryModule {
   }
 
   public static void setDefaults(Config cfg) {
+    cfg.setString(
+        "accountPatchLineReviewDb", null, "url",
+        JdbcAccountPatchLineReviewStore.TEST_IN_MEMORY_URL);
     cfg.setString(
         "accountPatchReviewDb", null, "url", JdbcAccountPatchReviewStore.TEST_IN_MEMORY_URL);
     cfg.setEnum("auth", null, "type", AuthType.DEVELOPMENT_BECOME_ANY_ACCOUNT);
