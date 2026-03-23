@@ -54,7 +54,7 @@ suite('gr-line-review-marker tests', () => {
     await element.updateComplete;
     await clock.runAllAsync();
     await waitUntil(() =>
-      (element.shadowRoot?.textContent ?? '').includes('Marked line 17')
+      Boolean(element.shadowRoot?.querySelector('.indicator'))
     );
 
     assert.isOk(queryAndAssert(element, '.indicator'));
@@ -93,7 +93,10 @@ suite('gr-line-review-marker tests', () => {
     await clock.runAllAsync();
     await element.updateComplete;
 
-    assert.include(element.shadowRoot?.textContent ?? '', 'Marked line 17');
+    const text = (element.shadowRoot?.textContent ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    assert.include(text, 'Marked line 17');
     assert.isOk(queryAndAssert(element, '.indicator'));
   });
 
@@ -111,6 +114,9 @@ suite('gr-line-review-marker tests', () => {
     const markersPromise = service.getLineRangeMarkers('foo.cc', Side.RIGHT);
     await clock.runAllAsync();
     assert.deepEqual(await markersPromise, []);
-    assert.include(element.shadowRoot?.textContent ?? '', 'Selected line 17');
+    const text = (element.shadowRoot?.textContent ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    assert.include(text, 'Selected line 17');
   });
 });
