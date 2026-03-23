@@ -170,6 +170,9 @@ export class GrDiffHost extends LitElement {
   @property({type: String})
   projectName?: RepoName;
 
+  @property({type: Array})
+  extraLayers: DiffLayer[] = [];
+
   @state()
   private _editWeblinks?: WebLinkInfo[];
 
@@ -691,7 +694,7 @@ export class GrDiffHost extends LitElement {
       );
     }
     layers.push(this.syntaxLayer);
-    return layers;
+    return [...layers, ...this.extraLayers];
   }
 
   clear() {
