@@ -34,7 +34,7 @@ jobs:
           path: |
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/MODULE.bazel.lock', '**/WORKSPACE', '**/WORKSPACE.bzlmod', '**/.bazelrc') }}
+          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/MODULE.bazel.lock', '**/WORKSPACE', '**/WORKSPACE.bzlmod', '**/.bazelrc', '**/yarn.lock', '**/package.json') }}
           restore-keys: |
             ${{ runner.os }}-bazel-
 
