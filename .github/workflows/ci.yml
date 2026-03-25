@@ -19,6 +19,11 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
       - name: Install Bazelisk
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -27,6 +32,11 @@ jobs:
           chmod +x "$HOME/.local/bin/bazelisk"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           bazelisk version
+
+      - name: Install npm dependencies
+        run: |
+          npm install -g yarn
+          yarn setup
 
       - name: Cache Bazel
         uses: actions/cache@v4
