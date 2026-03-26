@@ -19,6 +19,9 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Install tools/node_tools dependencies
+        run: cd tools/node_tools && yarn install --frozen-lockfile
+
       - name: Install Bazelisk
         run: |
           mkdir -p "$HOME/.local/bin"
