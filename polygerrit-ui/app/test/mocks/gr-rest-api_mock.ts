@@ -541,6 +541,15 @@ export const grRestApiMock: RestApiService = {
   saveFileReviewed(): Promise<Response> {
     return Promise.resolve(new Response());
   },
+  getReviewedLines(): Promise<undefined> {
+    return Promise.resolve(undefined);
+  },
+  saveReviewedLine(): Promise<Response> {
+    return Promise.resolve(new Response());
+  },
+  deleteReviewedLine(): Promise<Response> {
+    return Promise.resolve(new Response());
+  },
   saveFileUploadChangeEdit(): Promise<Response | undefined> {
     return Promise.resolve(new Response());
   },

@@ -99,6 +99,7 @@ import {ErrorCallback} from '../../api/rest';
 import {
   BatchLabelInput,
   BatchSubmitRequirementInput,
+  CommentSide,
   DeleteLabelInput,
   FileInfo,
   FixReplacementInfo,
@@ -111,6 +112,28 @@ import {
   SubmitRequirementInput,
   SubmitRequirementResultInfo,
 } from '../../api/rest-api';
+
+export interface LineReviewedInfo {
+  line: number;
+  side?: CommentSide;
+  range?: {
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
+  };
+}
+
+export interface LineReviewedInput {
+  line: number;
+  side?: CommentSide;
+  range?: {
+    startLine: number;
+    startCharacter: number;
+    endLine: number;
+    endCharacter: number;
+  };
+}
 
 export interface GetDiffCommentsOutput {
   baseComments: CommentInfo[];
@@ -921,6 +944,26 @@ export interface RestApiService extends Finalizable {
     patchNum: PatchSetNum,
     path: string,
     reviewed: boolean
+  ): Promise<Response>;
+
+  getReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<LineReviewedInfo[] | undefined>;
+
+  saveReviewedLine(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string,
+    input: LineReviewedInput
+  ): Promise<Response>;
+
+  deleteReviewedLine(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string,
+    input: LineReviewedInput
   ): Promise<Response>;
 
   getTopMenus(): Promise<TopMenuEntryInfo[] | undefined>;

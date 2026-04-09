@@ -112,6 +112,8 @@ import {
 } from '../../types/diff';
 import {
   GetDiffCommentsOutput,
+  LineReviewedInfo,
+  LineReviewedInput,
   RestApiService,
   SubmittabilityInfo,
 } from './gr-rest-api';
@@ -2294,6 +2296,48 @@ export class GrRestApiServiceImpl implements RestApiService, Finalizable {
       fetchOptions: {method: reviewed ? HttpMethod.PUT : HttpMethod.DELETE},
       url: `${url}/files/${encodeURIComponent(path)}/reviewed`,
       anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed`,
+      reportServerError: true,
+    });
+  }
+
+  async getReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<LineReviewedInfo[] | undefined> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/files/${encodeURIComponent(path)}/reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed_lines`,
+    }) as Promise<LineReviewedInfo[] | undefined>;
+  }
+
+  async saveReviewedLine(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string,
+    input: LineReviewedInput
+  ): Promise<Response> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetch({
+      fetchOptions: getFetchOptions({method: HttpMethod.PUT, body: input}),
+      url: `${url}/files/${encodeURIComponent(path)}/reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed_lines`,
+      reportServerError: true,
+    });
+  }
+
+  async deleteReviewedLine(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string,
+    input: LineReviewedInput
+  ): Promise<Response> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetch({
+      fetchOptions: getFetchOptions({method: HttpMethod.DELETE, body: input}),
+      url: `${url}/files/${encodeURIComponent(path)}/reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed_lines`,
       reportServerError: true,
     });
   }

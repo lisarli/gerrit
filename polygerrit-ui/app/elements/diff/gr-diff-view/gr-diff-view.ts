@@ -107,6 +107,11 @@ import {
   filesModelToken,
 } from '../../../models/change/files-model';
 import {LineMarkerToggledEvent} from '../gr-line-review-marker/gr-line-review-marker';
+import {
+  LineReviewMarkerService,
+  MockLineReviewMarkerService,
+  RestLineReviewMarkerService,
+} from '../gr-line-review-marker/line-review-marker-service';
 import {isImageDiff} from '../../../utils/diff-util';
 import {formStyles} from '../../../styles/form-styles';
 import {NormalizedFileInfo} from '../../change/gr-file-list/gr-file-list';
@@ -232,6 +237,11 @@ class LineReadStatusLayer implements DiffLayer {
     for (const listener of this.listeners) {
       listener(lineNum, lineNum, Side.RIGHT);
     }
+  }
+
+  clearMarks() {
+    this.markedLines.clear();
+    this.explicitlyUnreadLines.clear();
   }
 
   private computeStatus(lineNum: number, line: GrDiffLine): LineReadStatus {
@@ -397,8 +407,21 @@ export class GrDiffView extends LitElement {
 
   private readonly lineReadStatusLayer = new LineReadStatusLayer(
     () => this.path,
-    (path, lineNum, marked) => this.lineReadStatusLayer.setMarked(path, lineNum, marked)
+    (path, lineNum, marked) => {
+      this.lineReadStatusLayer.setMarked(path, lineNum, marked);
+      this.lineReviewMarkerService.saveLineRangeMarked({
+        path,
+        side: Side.RIGHT,
+        startLine: lineNum,
+        endLine: lineNum,
+        marked,
+      });
+    }
   );
+
+  @state()
+  private lineReviewMarkerService: LineReviewMarkerService =
+    new MockLineReviewMarkerService();
 
   private readonly reporting = getAppContext().reportingService;
 
@@ -932,6 +955,15 @@ export class GrDiffView extends LitElement {
       changedProperties.has('basePatchNum')
     ) {
       this.reloadDiff();
+      this.lineReadStatusLayer.clearMarks();
+      if (this.changeNum && this.patchNum) {
+        this.lineReviewMarkerService = new RestLineReviewMarkerService(
+          getAppContext().restApiService,
+          this.changeNum,
+          this.patchNum
+        );
+        this.loadLineMarkers();
+      }
     } else if (
       changedProperties.has('isActiveChildView') &&
       this.isActiveChildView
@@ -999,6 +1031,7 @@ export class GrDiffView extends LitElement {
             .selectedLine=${this.selectedDiffLine}
             .path=${this.path}
             .disabled=${!this.loggedIn}
+            .markerService=${this.lineReviewMarkerService}
             @line-marker-toggled=${this.onLineMarkerToggled}
           ></gr-line-review-marker>
         </div>
@@ -1844,6 +1877,22 @@ export class GrDiffView extends LitElement {
       e.detail.lineNum,
       e.detail.marked
     );
+  }
+
+  private async loadLineMarkers() {
+    if (!this.changeNum || !this.patchNum || !this.path || !this.loggedIn)
+      return;
+    const infos = await getAppContext().restApiService.getReviewedLines(
+      this.changeNum,
+      this.patchNum,
+      this.path
+    );
+    if (!infos) return;
+    for (const info of infos) {
+      if ((info.side ?? 'REVISION') === 'REVISION') {
+        this.lineReadStatusLayer.setMarked(this.path, info.line, true);
+      }
+    }
   }
 
   private isTooLargeForDownload() {
