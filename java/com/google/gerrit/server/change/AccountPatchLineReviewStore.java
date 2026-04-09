@@ -16,6 +16,7 @@ package com.google.gerrit.server.change;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -160,4 +161,17 @@ public interface AccountPatchLineReviewStore {
    */
   Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path);
+
+  /**
+   * Finds all reviewed lines/regions for the given patch set and file across all users.
+   *
+   * @param psId patch set ID
+   * @param path file path to filter by (required)
+   * @return map of account ID to list of reviewed lines/regions for that account
+   */
+  default ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    throw new NotImplementedException(
+        "findAllReviewedLines() is not implemented for this AccountPatchLineReviewStore.");
+  }
 }

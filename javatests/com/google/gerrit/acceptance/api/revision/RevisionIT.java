@@ -1853,6 +1853,119 @@ public class RevisionIT extends AbstractDaemonTest {
     adminRestSession.delete(reviewedLinesUrl(r.getChangeId())).assertBadRequest();
   }
 
+  // -- HTTP-level tests for the all_reviewed_lines REST endpoint --
+
+  private String allReviewedLinesUrl(String changeId) {
+    return "/changes/"
+        + changeId
+        + "/revisions/current/files/"
+        + FILE_NAME
+        + "/all_reviewed_lines";
+  }
+
+  @Test
+  public void getAllReviewedLines_noMarkers_returnsEmptyMap() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void getAllReviewedLines_singleReviewer_returnsMarkersUnderAccountId() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(admin.id().get());
+    List<LineReviewedInfo> adminLines = result.get(admin.id().get());
+    assertThat(adminLines).hasSize(1);
+    assertThat(adminLines.get(0).line).isEqualTo(5);
+    assertThat(adminLines.get(0).side).isEqualTo(Side.REVISION);
+  }
+
+  @Test
+  public void getAllReviewedLines_multipleReviewers_returnsAllMarkers() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    // Admin marks line 5
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 5;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), adminInput).assertCreated();
+
+    // User marks line 10
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 10;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r.getChangeId()), userInput).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(2);
+    assertThat(result).containsKey(admin.id().get());
+    assertThat(result).containsKey(user.id().get());
+    assertThat(result.get(admin.id().get()).get(0).line).isEqualTo(5);
+    assertThat(result.get(user.id().get()).get(0).line).isEqualTo(10);
+  }
+
+  @Test
+  public void getAllReviewedLines_markersOnOtherFile_notIncluded() throws Exception {
+    // Create a change with two files
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            "Subject",
+            ImmutableMap.of(FILE_NAME, "content", "other.txt", "other content"));
+    PushOneCommit.Result r = push.to("refs/for/master");
+
+    // Admin marks a line in FILE_NAME
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    // Query all_reviewed_lines for the other file — should be empty
+    String otherFileUrl =
+        "/changes/"
+            + r.getChangeId()
+            + "/revisions/current/files/other.txt/all_reviewed_lines";
+    RestResponse resp = adminRestSession.get(otherFileUrl);
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).isEmpty();
+  }
+
   @Test
   public void setReviewedFlagWithMultiplePatchSets() throws Exception {
     PushOneCommit push = pushFactory.create(admin.newIdent(), testRepo);

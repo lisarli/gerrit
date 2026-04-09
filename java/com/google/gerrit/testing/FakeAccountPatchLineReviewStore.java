@@ -16,6 +16,7 @@ package com.google.gerrit.testing;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -29,7 +30,9 @@ import com.google.inject.Singleton;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -214,6 +217,34 @@ public class FakeAccountPatchLineReviewStore
         }
       }
       store.removeAll(toRemove);
+    }
+  }
+
+  @Override
+  public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    synchronized (store) {
+      Map<Account.Id, ImmutableList.Builder<ReviewedLine>> builders = new LinkedHashMap<>();
+      for (LineEntity entity : store) {
+        if (!entity.psId().equals(psId) || !entity.path().equals(path)) {
+          continue;
+        }
+        builders
+            .computeIfAbsent(entity.accountId(), k -> ImmutableList.builder())
+            .add(
+                ReviewedLine.create(
+                    entity.path(),
+                    entity.lineNumber(),
+                    entity.side(),
+                    entity.startLine(),
+                    entity.startChar(),
+                    entity.endLine(),
+                    entity.endChar()));
+      }
+      ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
+          ImmutableMap.builder();
+      builders.forEach((accountId, builder) -> result.put(accountId, builder.build()));
+      return result.build();
     }
   }
 

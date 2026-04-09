@@ -18,6 +18,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.flogger.FluentLogger;
 import com.google.common.primitives.Ints;
 import com.google.gerrit.entities.Account;
@@ -45,6 +46,8 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import com.google.common.annotations.VisibleForTesting;
 import java.util.Optional;
 import javax.sql.DataSource;
@@ -453,6 +456,50 @@ public abstract class JdbcAccountPatchLineReviewStore
           }
           return Optional.of(PatchSetWithReviewedLines.create(psId, lines));
         }
+      }
+    } catch (SQLException e) {
+      throw convertError("select", e);
+    }
+  }
+
+  @Override
+  public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    try (TraceTimer ignored =
+            TraceContext.newTimer(
+                "Find all reviewers' line reviewed flags",
+                Metadata.builder().patchSetId(psId.get()).filePath(path).build());
+        Connection con = ds.getConnection();
+        PreparedStatement stmt =
+            con.prepareStatement(
+                "SELECT account_id, file_name, line_number, side, start_line, start_char, "
+                    + "end_line, end_char "
+                    + "FROM account_patch_line_reviews "
+                    + "WHERE change_id = ? AND patch_set_id = ? AND file_name = ? "
+                    + "ORDER BY account_id, line_number")) {
+      stmt.setInt(1, psId.changeId().get());
+      stmt.setInt(2, psId.get());
+      stmt.setString(3, path);
+      try (ResultSet rs = stmt.executeQuery()) {
+        Map<Account.Id, ImmutableList.Builder<ReviewedLine>> builders = new LinkedHashMap<>();
+        while (rs.next()) {
+          Account.Id accountId = Account.id(rs.getInt("account_id"));
+          builders
+              .computeIfAbsent(accountId, k -> ImmutableList.builder())
+              .add(
+                  ReviewedLine.create(
+                      rs.getString("file_name"),
+                      rs.getInt("line_number"),
+                      rs.getShort("side"),
+                      rs.getInt("start_line"),
+                      rs.getInt("start_char"),
+                      rs.getInt("end_line"),
+                      rs.getInt("end_char")));
+        }
+        ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
+            ImmutableMap.builder();
+        builders.forEach((accountId, builder) -> result.put(accountId, builder.build()));
+        return result.build();
       }
     } catch (SQLException e) {
       throw convertError("select", e);
