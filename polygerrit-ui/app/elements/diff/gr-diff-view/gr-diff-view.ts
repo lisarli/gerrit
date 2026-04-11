@@ -139,6 +139,25 @@ export interface Files {
 
 type LineReadStatus = 'read' | 'tentative' | 'unread';
 
+interface ReviewerHistoryEntry {
+  id: string;
+  name: string;
+  color: string;
+}
+
+interface ReviewerDot {
+  color: string;
+  label: string;
+}
+
+const REVIEWER_HISTORY: ReviewerHistoryEntry[] = [
+  {id: 'hena', name: 'Hena', color: '#4285f4'},
+  {id: 'lisa', name: 'Lisa', color: '#a142f4'},
+  {id: 'serena', name: 'Serena', color: '#ff6d01'},
+];
+
+const ACTIVE_REVIEWER_ID = 'hena';
+
 class LineReadStatusLayer implements DiffLayer {
   private listeners: DiffLayerListener[] = [];
 
@@ -150,7 +169,9 @@ class LineReadStatusLayer implements DiffLayer {
 
   constructor(
     private readonly getPath: () => string | undefined,
-    private readonly onToggle: (path: string, lineNum: number, marked: boolean) => void
+    private readonly onToggle: (path: string, lineNum: number, marked: boolean) => void,
+    private readonly getReviewerDots: (path: string, lineNum: number) => ReviewerDot[],
+    private readonly getReviewerSlotCount: () => number
   ) {}
 
   addListener(listener: DiffLayerListener) {
@@ -176,6 +197,9 @@ class LineReadStatusLayer implements DiffLayer {
     let indicator = lineNumberEl.querySelector<HTMLElement>(
       '.lineReadStatusIndicator'
     );
+    let reviewerContainer = lineNumberEl.querySelector<HTMLElement>(
+      '.lineReviewerDots'
+    );
     if (!indicator) {
       indicator = document.createElement('button');
       indicator.className = 'lineReadStatusIndicator';
@@ -197,14 +221,42 @@ class LineReadStatusLayer implements DiffLayer {
       lineNumberEl.style.position = 'relative';
       lineNumberEl.append(indicator);
     }
+    if (!reviewerContainer) {
+      reviewerContainer = document.createElement('span');
+      reviewerContainer.className = 'lineReviewerDots';
+      reviewerContainer.style.position = 'absolute';
+      reviewerContainer.style.left = '18px';
+      reviewerContainer.style.top = '50%';
+      reviewerContainer.style.transform = 'translateY(-50%)';
+      reviewerContainer.style.display = 'inline-flex';
+      reviewerContainer.style.alignItems = 'center';
+      reviewerContainer.style.gap = '4px';
+      reviewerContainer.style.pointerEvents = 'none';
+      reviewerContainer.style.zIndex = '1';
+      lineNumberEl.append(reviewerContainer);
+    }
+    const path = this.getPath();
+    if (!path) return;
+    const reviewerDots = this.getReviewerDots(path, lineNum);
+    reviewerContainer.replaceChildren(
+      ...reviewerDots.map(dot => {
+        const reviewerDot = document.createElement('span');
+        reviewerDot.style.width = '6px';
+        reviewerDot.style.height = '6px';
+        reviewerDot.style.borderRadius = '50%';
+        reviewerDot.style.backgroundColor = dot.color;
+        reviewerDot.title = dot.label;
+        return reviewerDot;
+      })
+    );
+    const reservedWidth = 18 + this.getReviewerSlotCount() * 10;
+    lineNumberEl.style.paddingLeft = `${reservedWidth}px`;
     indicator.style.backgroundColor = this.getStatusColor(status);
     indicator.title = this.getStatusTitle(status);
     indicator.setAttribute('aria-label', this.getStatusTitle(status));
     indicator.onmousedown = event => {
       event.preventDefault();
       event.stopPropagation();
-      const path = this.getPath();
-      if (!path) return;
       const marked = status !== 'read';
       this.dragState = {path, marked};
       this.onToggle(path, lineNum, marked);
@@ -404,6 +456,12 @@ export class GrDiffView extends LitElement {
   @state()
   private selectedDiffLine?: DisplayLine;
 
+  @state()
+  private reviewerHistory = REVIEWER_HISTORY;
+
+  @state()
+  private currentReviewerReviewedLines: string[] = [];
+
   // visible for testing
   reviewedFiles = new Set<string>();
 
@@ -411,6 +469,7 @@ export class GrDiffView extends LitElement {
     () => this.path,
     (path, lineNum, marked) => {
       this.lineReadStatusLayer.setMarked(path, lineNum, marked);
+      this.updateCurrentReviewerLine(path, lineNum, marked);
       this.lineReviewMarkerService.saveLineRangeMarked({
         path,
         side: Side.RIGHT,
@@ -418,7 +477,9 @@ export class GrDiffView extends LitElement {
         endLine: lineNum,
         marked,
       });
-    }
+    },
+    (path, lineNum) => this.getReviewerDots(path, lineNum),
+    () => this.reviewerHistory.length
   );
 
   @state()
@@ -872,12 +933,116 @@ export class GrDiffView extends LitElement {
         :host(.hideCheckCodePointers) {
           --gr-check-code-pointers-display: none;
         }
+        .diffBody {
+          align-items: flex-start;
+          display: flex;
+          gap: var(--spacing-l);
+        }
+        .diffHostContainer {
+          flex: 1;
+          min-width: 0;
+        }
         .diffContainer.sidebarOpen {
           margin-left: var(--sidebar-width);
         }
         .lineReviewMarker {
           display: flex;
           justify-content: flex-end;
+        }
+        .reviewHistoryPanel {
+          background: var(--background-color-primary);
+          border: 1px solid var(--border-color);
+          border-radius: 16px;
+          box-shadow: var(--elevation-level-1);
+          flex: 0 0 280px;
+          overflow: hidden;
+          position: sticky;
+          top: var(--spacing-xl);
+        }
+        .reviewHistoryHeader {
+          align-items: center;
+          background: var(--background-color-secondary);
+          border-bottom: 1px solid var(--border-color);
+          display: flex;
+          justify-content: space-between;
+          padding: var(--spacing-l);
+        }
+        .reviewHistoryTitle {
+          font-size: var(--font-size-h3);
+          font-weight: var(--font-weight-bold);
+        }
+        .reviewHistorySubtitle {
+          color: var(--deemphasized-text-color);
+          font-size: var(--font-size-small);
+        }
+        .reviewHistoryBody {
+          display: grid;
+          gap: var(--spacing-l);
+          padding: var(--spacing-l);
+        }
+        .historySelection {
+          background: var(--background-color-secondary);
+          border-radius: 12px;
+          padding: var(--spacing-m);
+        }
+        .historySelectionTitle {
+          color: var(--deemphasized-text-color);
+          font-size: var(--font-size-small);
+          margin-bottom: var(--spacing-s);
+        }
+        .historySelectionNames {
+          align-items: center;
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--spacing-s);
+        }
+        .historySelectionEmpty {
+          color: var(--deemphasized-text-color);
+          font-size: var(--font-size-small);
+        }
+        .reviewerList {
+          display: grid;
+          gap: var(--spacing-m);
+        }
+        .reviewerRow {
+          align-items: center;
+          display: grid;
+          gap: var(--spacing-m);
+          grid-template-columns: auto 1fr auto;
+        }
+        .reviewerIdentity {
+          align-items: center;
+          display: inline-flex;
+          gap: var(--spacing-s);
+        }
+        .reviewerSwatch {
+          border-radius: 999px;
+          display: inline-block;
+          height: 10px;
+          width: 10px;
+        }
+        .reviewerBadge {
+          border: 1px solid var(--border-color);
+          border-radius: 999px;
+          color: var(--deemphasized-text-color);
+          font-size: var(--font-size-small);
+          padding: 2px var(--spacing-s);
+        }
+        .reviewerCount {
+          color: var(--deemphasized-text-color);
+          font-size: var(--font-size-small);
+        }
+        .historyLegend {
+          color: var(--deemphasized-text-color);
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--spacing-m);
+          font-size: var(--font-size-small);
+        }
+        .historyLegendItem {
+          align-items: center;
+          display: inline-flex;
+          gap: var(--spacing-s);
         }
         .sidebarTriggerContainer {
           display: inline-block;
@@ -898,6 +1063,15 @@ export class GrDiffView extends LitElement {
         md-checkbox {
           --md-checkbox-container-size: 15px;
           --md-checkbox-icon-size: 15px;
+        }
+        @media screen and (max-width: 50em) {
+          .diffBody {
+            flex-direction: column;
+          }
+          .reviewHistoryPanel {
+            position: static;
+            width: 100%;
+          }
         }
       `,
     ];
@@ -958,6 +1132,7 @@ export class GrDiffView extends LitElement {
     ) {
       this.reloadDiff();
       this.lineReadStatusLayer.clearMarks();
+      this.currentReviewerReviewedLines = [];
       if (this.changeNum && this.patchNum) {
         this.lineReviewMarkerService = new RestLineReviewMarkerService(
           getAppContext().restApiService,
@@ -1037,25 +1212,30 @@ export class GrDiffView extends LitElement {
             @line-marker-toggled=${this.onLineMarkerToggled}
           ></gr-line-review-marker>
         </div>
-        <gr-diff-host
-          id="diffHost"
-          .changeNum=${this.changeNum}
-          .change=${this.change}
-          .patchRange=${this.patchRange}
-          .file=${file}
-          .lineOfInterest=${this.getLineOfInterest()}
-          .path=${this.path}
-          .projectName=${this.change?.project}
-          .extraLayers=${[this.lineReadStatusLayer]}
-          @is-blame-loaded-changed=${this.onIsBlameLoadedChanged}
-          @comment-anchor-tap=${this.onCommentAnchorTap}
-          @line-selected=${this.onLineSelected}
-          @diff-changed=${this.onDiffChanged}
-          @edit-weblinks-changed=${this.onEditWeblinksChanged}
-          @files-weblinks-changed=${this.onFilesWeblinksChanged}
-          @render=${this.reInitCursor}
-        >
-        </gr-diff-host>
+        <div class="diffBody">
+          <div class="diffHostContainer">
+            <gr-diff-host
+              id="diffHost"
+              .changeNum=${this.changeNum}
+              .change=${this.change}
+              .patchRange=${this.patchRange}
+              .file=${file}
+              .lineOfInterest=${this.getLineOfInterest()}
+              .path=${this.path}
+              .projectName=${this.change?.project}
+              .extraLayers=${[this.lineReadStatusLayer]}
+              @is-blame-loaded-changed=${this.onIsBlameLoadedChanged}
+              @comment-anchor-tap=${this.onCommentAnchorTap}
+              @line-selected=${this.onLineSelected}
+              @diff-changed=${this.onDiffChanged}
+              @edit-weblinks-changed=${this.onEditWeblinksChanged}
+              @files-weblinks-changed=${this.onFilesWeblinksChanged}
+              @render=${this.reInitCursor}
+            >
+            </gr-diff-host>
+          </div>
+          ${this.renderReviewHistoryPanel()}
+        </div>
       </div>
       ${this.renderDialogs()}
     `;
@@ -1083,6 +1263,103 @@ export class GrDiffView extends LitElement {
       </div>
       ${this.renderSidebarContent()}
     </div>`;
+  }
+
+  private renderReviewHistoryPanel() {
+    const selectedLineNum =
+      typeof this.selectedDiffLine?.lineNum === 'number'
+        ? this.selectedDiffLine.lineNum
+        : undefined;
+    const reviewersForSelection =
+      selectedLineNum && this.path
+        ? this.reviewerHistory.filter(reviewer =>
+            this.hasReviewerReviewedLine(reviewer.id, this.path!, selectedLineNum)
+          )
+        : [];
+    return html`
+      <aside class="reviewHistoryPanel">
+        <div class="reviewHistoryHeader">
+          <div>
+            <div class="reviewHistoryTitle">History</div>
+            <div class="reviewHistorySubtitle">
+              Reviewer presence updates as lines are marked read.
+            </div>
+          </div>
+        </div>
+        <div class="reviewHistoryBody">
+          <div class="historySelection">
+            <div class="historySelectionTitle">
+              ${selectedLineNum ? `Line ${selectedLineNum}` : 'Select a line'}
+            </div>
+            ${reviewersForSelection.length
+              ? html`
+                  <div class="historySelectionNames">
+                    ${reviewersForSelection.map(
+                      reviewer => html`
+                        <span class="reviewerIdentity">
+                          <span
+                            class="reviewerSwatch"
+                            style=${styleMap({backgroundColor: reviewer.color})}
+                          ></span>
+                          <span>${reviewer.name}</span>
+                        </span>
+                      `
+                    )}
+                  </div>
+                `
+              : html`
+                  <div class="historySelectionEmpty">
+                    No reviewer history for the current selection yet.
+                  </div>
+                `}
+          </div>
+          <div class="reviewerList">
+            ${this.reviewerHistory.map(
+              reviewer => html`
+                <div class="reviewerRow">
+                  <div class="reviewerIdentity">
+                    <span
+                      class="reviewerSwatch"
+                      style=${styleMap({backgroundColor: reviewer.color})}
+                    ></span>
+                    <span>${reviewer.name}</span>
+                  </div>
+                  ${reviewer.id === ACTIVE_REVIEWER_ID
+                    ? html`<span class="reviewerBadge">Live</span>`
+                    : html`<span></span>`}
+                  <span class="reviewerCount">
+                    ${this.getReviewerSummaryLabel(reviewer.id)}
+                  </span>
+                </div>
+              `
+            )}
+          </div>
+          <div class="historyLegend">
+            <span class="historyLegendItem">
+              <span
+                class="reviewerSwatch"
+                style=${styleMap({backgroundColor: '#34a853'})}
+              ></span>
+              <span>Read</span>
+            </span>
+            <span class="historyLegendItem">
+              <span
+                class="reviewerSwatch"
+                style=${styleMap({backgroundColor: '#fbbc04'})}
+              ></span>
+              <span>Tentative</span>
+            </span>
+            <span class="historyLegendItem">
+              <span
+                class="reviewerSwatch"
+                style=${styleMap({backgroundColor: '#9aa0a6'})}
+              ></span>
+              <span>Unread</span>
+            </span>
+          </div>
+        </div>
+      </aside>
+    `;
   }
 
   private renderHeader() {
@@ -1872,6 +2149,89 @@ export class GrDiffView extends LitElement {
     this.updateUrlToDiffUrl(lineNumber as number, e.detail.side === Side.LEFT);
   }
 
+  private computeLineKey(path: string, lineNum: number) {
+    return `${path}:${lineNum}`;
+  }
+
+  private updateCurrentReviewerLine(path: string, lineNum: number, marked: boolean) {
+    const lineKey = this.computeLineKey(path, lineNum);
+    const next = new Set(this.currentReviewerReviewedLines);
+    if (marked) {
+      next.add(lineKey);
+    } else {
+      next.delete(lineKey);
+    }
+    this.currentReviewerReviewedLines = [...next].sort();
+  }
+
+  private hasReviewerReviewedLine(
+    reviewerId: string,
+    path: string,
+    lineNum: number
+  ) {
+    if (reviewerId === ACTIVE_REVIEWER_ID) {
+      return this.currentReviewerReviewedLines.includes(
+        this.computeLineKey(path, lineNum)
+      );
+    }
+    const pathWeight = [...path].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    if (reviewerId === 'lisa') {
+      return (lineNum + pathWeight) % 4 === 0 || lineNum % 9 === 0;
+    }
+    if (reviewerId === 'serena') {
+      return (lineNum + pathWeight) % 7 === 0;
+    }
+    return false;
+  }
+
+  private getReviewerDots(path: string, lineNum: number): ReviewerDot[] {
+    return this.reviewerHistory
+      .filter(reviewer => this.hasReviewerReviewedLine(reviewer.id, path, lineNum))
+      .map(reviewer => ({
+        color: reviewer.color,
+        label: `${reviewer.name} reviewed line ${lineNum}`,
+      }));
+  }
+
+  private getReviewerReviewedCount(reviewerId: string) {
+    if (reviewerId === ACTIVE_REVIEWER_ID) {
+      return this.currentReviewerReviewedLines.length;
+    }
+    const totalLines = this.getTotalReviewableLines();
+    if (!this.path || totalLines < 1) return 0;
+    let count = 0;
+    for (let lineNum = 1; lineNum <= totalLines; lineNum++) {
+      if (this.hasReviewerReviewedLine(reviewerId, this.path, lineNum)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  private getReviewerSummaryLabel(reviewerId: string) {
+    return `${this.getReviewerReviewedPercent(reviewerId)}% reviewed`;
+  }
+
+  private getReviewerReviewedPercent(reviewerId: string) {
+    const totalLines = this.getTotalReviewableLines();
+    if (totalLines < 1) return 0;
+    return Math.round((this.getReviewerReviewedCount(reviewerId) / totalLines) * 100);
+  }
+
+  private getTotalReviewableLines() {
+    const metaLines = this.diff?.meta_b?.lines ?? this.diff?.meta_a?.lines;
+    if (typeof metaLines === 'number' && metaLines > 0) return metaLines;
+    if (!this.diff?.content) return 0;
+    return this.diff.content.reduce((total, chunk) => {
+      if (chunk.ab) return total + chunk.ab.length;
+      if (chunk.b) return total + chunk.b.length;
+      if (chunk.skip) {
+        return total + (typeof chunk.skip === 'number' ? chunk.skip : chunk.skip.right);
+      }
+      return total;
+    }, 0);
+  }
+
   private onLineMarkerToggled(e: LineMarkerToggledEvent) {
     if (typeof e.detail.lineNum !== 'number') return;
     this.lineReadStatusLayer.setMarked(
@@ -1879,6 +2239,7 @@ export class GrDiffView extends LitElement {
       e.detail.lineNum,
       e.detail.marked
     );
+    this.updateCurrentReviewerLine(e.detail.path, e.detail.lineNum, e.detail.marked);
   }
 
   private async loadLineMarkers() {
@@ -1890,11 +2251,14 @@ export class GrDiffView extends LitElement {
       this.path
     );
     if (!infos) return;
+    const currentReviewerLines = new Set<string>();
     for (const info of infos) {
       if ((info.side ?? 'REVISION') === 'REVISION') {
         this.lineReadStatusLayer.setMarked(this.path, info.line, true);
+        currentReviewerLines.add(this.computeLineKey(this.path, info.line));
       }
     }
+    this.currentReviewerReviewedLines = [...currentReviewerLines].sort();
   }
 
   private isTooLargeForDownload() {
