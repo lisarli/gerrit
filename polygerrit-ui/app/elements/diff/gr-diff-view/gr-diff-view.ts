@@ -232,7 +232,9 @@ class LineReadStatusLayer implements DiffLayer {
       this.explicitlyUnreadLines.delete(key);
     } else {
       this.markedLines.delete(key);
-      this.explicitlyUnreadLines.add(key);
+      // Unmarking should revert to the default status (e.g. tentative for BOTH),
+      // not force the line to be explicitly unread.
+      this.explicitlyUnreadLines.delete(key);
     }
     for (const listener of this.listeners) {
       listener(lineNum, lineNum, Side.RIGHT);
