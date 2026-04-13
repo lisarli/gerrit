@@ -14,6 +14,7 @@
 
 package com.google.gerrit.server.restapi.change;
 
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.common.LineReviewedInfo;
 import com.google.gerrit.extensions.restapi.BadRequestException;
 import com.google.gerrit.extensions.restapi.Response;
@@ -59,6 +60,7 @@ public class ReviewedLines {
               LineReviewedInfo info = new LineReviewedInfo();
               info.line = line.lineNumber();
               info.side = line.getSide();
+              info.status = ReviewStatus.READ;
               if (line.startLine() != line.endLine()
                   || line.startChar() != 0
                   || line.endChar() != 0) {
@@ -93,6 +95,9 @@ public class ReviewedLines {
         throws BadRequestException {
       if (input == null || input.line == null || input.line < 1) {
         throw new BadRequestException("line is required (1-based)");
+      }
+      if (input.status != null && input.status != ReviewStatus.READ) {
+        throw new BadRequestException("only READ may be set when marking a line reviewed");
       }
       boolean updated =
           accountPatchLineReviewStore.call(

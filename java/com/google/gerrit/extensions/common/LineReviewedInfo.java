@@ -15,6 +15,7 @@
 package com.google.gerrit.extensions.common;
 
 import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 
 /**
@@ -32,4 +33,9 @@ public class LineReviewedInfo {
 
   /** Side of the diff: PARENT (0) or REVISION (1). Default is REVISION. */
   public Side side;
+
+  /**
+   * Review status of the line or region. 
+   */
+  public ReviewStatus status;
 }
