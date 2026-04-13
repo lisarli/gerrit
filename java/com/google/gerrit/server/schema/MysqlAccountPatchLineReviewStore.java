@@ -65,6 +65,8 @@ public class MysqlAccountPatchLineReviewStore extends JdbcAccountPatchLineReview
             + "start_char INTEGER DEFAULT 0 NOT NULL, "
             + "end_line INTEGER DEFAULT 1 NOT NULL, "
             + "end_char INTEGER DEFAULT 0 NOT NULL, "
+            + "review_status SMALLINT DEFAULT 0 NOT NULL, "
+            + "tentative_carryover BOOLEAN DEFAULT FALSE NOT NULL, "
             + "CONSTRAINT primary_key_account_patch_line_reviews "
             + "PRIMARY KEY (change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)"

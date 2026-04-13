@@ -26,6 +26,7 @@ import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.exceptions.DuplicateKeyException;
 import com.google.gerrit.exceptions.StorageException;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.events.LifecycleListener;
 import com.google.gerrit.extensions.registration.DynamicItem;
@@ -42,11 +43,15 @@ import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Collection;
-import com.google.common.annotations.VisibleForTesting;
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
+import com.google.common.annotations.VisibleForTesting;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
@@ -232,11 +237,40 @@ public abstract class JdbcAccountPatchLineReviewStore
   }
 
   public void createTableIfNotExists() {
-    try (Connection con = ds.getConnection();
-        Statement stmt = con.createStatement()) {
-      doCreateTable(stmt);
+    try (Connection con = ds.getConnection()) {
+      try (Statement stmt = con.createStatement()) {
+        doCreateTable(stmt);
+      }
+      upgradeSchema(con);
     } catch (SQLException e) {
       throw convertError("create", e);
+    }
+  }
+
+  /**
+   * Adds {@code review_status} and {@code tentative_carryover} for databases without these new columns.
+   */
+  protected void upgradeSchema(Connection con) throws SQLException {
+    // see what columns there are and add the two columns if not present already
+    try (Statement checkStmt = con.createStatement();
+        ResultSet rs = checkStmt.executeQuery("SELECT * FROM account_patch_line_reviews WHERE 1=0")) {
+      ResultSetMetaData md = rs.getMetaData();
+      Set<String> cols = new HashSet<>();
+      for (int i = 1; i <= md.getColumnCount(); i++) {
+        cols.add(md.getColumnLabel(i).toLowerCase(Locale.US));
+      }
+      try (Statement alter = con.createStatement()) {
+        if (!cols.contains("review_status")) {
+          alter.executeUpdate(
+              "ALTER TABLE account_patch_line_reviews ADD COLUMN review_status "
+                  + "SMALLINT NOT NULL DEFAULT 0");
+        }
+        if (!cols.contains("tentative_carryover")) {
+          alter.executeUpdate(
+              "ALTER TABLE account_patch_line_reviews ADD COLUMN tentative_carryover "
+                  + "BOOLEAN NOT NULL DEFAULT FALSE");
+        }
+      }
     }
   }
 
@@ -253,6 +287,8 @@ public abstract class JdbcAccountPatchLineReviewStore
             + "start_char INTEGER DEFAULT 0 NOT NULL, "
             + "end_line INTEGER DEFAULT 1 NOT NULL, "
             + "end_char INTEGER DEFAULT 0 NOT NULL, "
+            + "review_status SMALLINT DEFAULT 0 NOT NULL, "
+            + "tentative_carryover BOOLEAN DEFAULT FALSE NOT NULL, "
             + "CONSTRAINT primary_key_account_patch_line_reviews "
             + "PRIMARY KEY (change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)"
@@ -269,6 +305,7 @@ public abstract class JdbcAccountPatchLineReviewStore
     int[] lineNumber = new int[1];
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalizeInput(input, lineNumber, startLine, startChar, endLine, endChar);
+    short sideShort = sideToShort(side);
 
     try (TraceTimer ignored =
             TraceContext.newTimer(
@@ -278,32 +315,125 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .accountId(accountId.get())
                     .filePath(path)
                     .build());
-        Connection con = ds.getConnection();
-        PreparedStatement stmt =
-            con.prepareStatement(
-                "INSERT INTO account_patch_line_reviews "
-                    + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
-                    + "start_line, start_char, end_line, end_char) VALUES "
-                    + "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-      stmt.setInt(1, accountId.get());
-      stmt.setInt(2, psId.changeId().get());
-      stmt.setInt(3, psId.get());
-      stmt.setString(4, path);
-      stmt.setInt(5, lineNumber[0]);
-      stmt.setShort(6, sideToShort(side));
-      stmt.setInt(7, startLine[0]);
-      stmt.setInt(8, startChar[0]);
-      stmt.setInt(9, endLine[0]);
-      stmt.setInt(10, endChar[0]);
-      stmt.executeUpdate();
-      return true;
+        Connection con = ds.getConnection()) {
+      boolean prevAutoCommit = con.getAutoCommit();
+      con.setAutoCommit(false); // transaction to ensure atomicity
+      try {
+        boolean updated =
+            markLineReviewedInTransaction(
+                con,
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0]);
+        con.commit();
+        return updated;
+      } catch (SQLException e) {
+        con.rollback();
+        throw convertError("markLineReviewed", e);
+      } finally {
+        con.setAutoCommit(prevAutoCommit);
+      }
     } catch (SQLException e) {
-      StorageException ormException = convertError("insert", e);
-      if (ormException instanceof DuplicateKeyException) {
+      throw convertError("markLineReviewed", e);
+    }
+  }
+
+  /**
+   * Marks a line {@link ReviewStatus#READ} via the REST API: inserts a new row, upgrades {@link
+   * ReviewStatus#TENTATIVELY_READ} to READ while preserving {@code tentative_carryover}, or does
+   * nothing if already READ.
+   */
+  private boolean markLineReviewedInTransaction(
+      Connection con,
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar)
+      throws SQLException {
+    String select =
+        "SELECT review_status, tentative_carryover FROM account_patch_line_reviews WHERE "
+            + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+            + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+            + "AND end_line = ? AND end_char = ?";
+    try (PreparedStatement sel = con.prepareStatement(select)) {
+      bindLineGeometry(
+          sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+      try (ResultSet rs = sel.executeQuery()) {
+        if (!rs.next()) {
+          // no row found, insert a new one
+          try (PreparedStatement ins =
+              con.prepareStatement(
+                  "INSERT INTO account_patch_line_reviews "
+                      + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+                      + "start_line, start_char, end_line, end_char, review_status, "
+                      + "tentative_carryover) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+            bindLineGeometry(
+                ins, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+            ins.setShort(11, ReviewStatus.READ.toDbValue());
+            ins.setBoolean(12, false);
+            ins.executeUpdate();
+            return true;
+          }
+        }
+        ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
+        if (current == ReviewStatus.READ) {
+          return false;
+        }
+        if (current == ReviewStatus.TENTATIVELY_READ) {
+          try (PreparedStatement upd =
+              con.prepareStatement(
+                  "UPDATE account_patch_line_reviews SET review_status = ? WHERE "
+                      + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+                      + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+                      + "AND end_line = ? AND end_char = ?")) {
+            upd.setShort(1, ReviewStatus.READ.toDbValue());
+            bindLineGeometry(
+                upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+            upd.executeUpdate();
+            return true;
+          }
+        }
         return false;
       }
-      throw ormException;
     }
+  }
+
+  // fill in the placeholders in the query
+  private static void bindLineGeometry(
+      PreparedStatement stmt,
+      int startIdx,
+      Account.Id accountId,
+      PatchSet.Id psId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar)
+      throws SQLException {
+    int i = startIdx;
+    stmt.setInt(i++, accountId.get());
+    stmt.setInt(i++, psId.changeId().get());
+    stmt.setInt(i++, psId.get());
+    stmt.setString(i++, path);
+    stmt.setInt(i++, lineNumber);
+    stmt.setShort(i++, side);
+    stmt.setInt(i++, startLine);
+    stmt.setInt(i++, startChar);
+    stmt.setInt(i++, endLine);
+    stmt.setInt(i++, endChar);
   }
 
   @Override
@@ -327,6 +457,7 @@ public abstract class JdbcAccountPatchLineReviewStore
     int[] lineNumber = new int[1];
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalizeInput(input, lineNumber, startLine, startChar, endLine, endChar);
+    short sideShort = sideToShort(side);
 
     try (TraceTimer ignored =
             TraceContext.newTimer(
@@ -336,25 +467,87 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .accountId(accountId.get())
                     .filePath(path)
                     .build());
-        Connection con = ds.getConnection();
-        PreparedStatement stmt =
-            con.prepareStatement(
-                "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
-                    + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
-                    + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
-      stmt.setInt(1, accountId.get());
-      stmt.setInt(2, psId.changeId().get());
-      stmt.setInt(3, psId.get());
-      stmt.setString(4, path);
-      stmt.setInt(5, lineNumber[0]);
-      stmt.setShort(6, sideToShort(side));
-      stmt.setInt(7, startLine[0]);
-      stmt.setInt(8, startChar[0]);
-      stmt.setInt(9, endLine[0]);
-      stmt.setInt(10, endChar[0]);
-      stmt.executeUpdate();
+        Connection con = ds.getConnection()) {
+      boolean prevAutoCommit = con.getAutoCommit();
+      con.setAutoCommit(false);
+      try {
+        clearLineReviewedInTransaction(
+            con,
+            psId,
+            accountId,
+            path,
+            lineNumber[0],
+            sideShort,
+            startLine[0],
+            startChar[0],
+            endLine[0],
+            endChar[0]);
+        con.commit();
+      } catch (SQLException e) {
+        con.rollback();
+        throw convertError("clearLineReviewed", e);
+      } finally {
+        con.setAutoCommit(prevAutoCommit);
+      }
     } catch (SQLException e) {
-      throw convertError("delete", e);
+      throw convertError("clearLineReviewed", e);
+    }
+  }
+
+  /**
+   * If the row is {@link ReviewStatus#READ} with {@code tentative_carryover}, downgrade to {@link
+   * ReviewStatus#TENTATIVELY_READ}; otherwise delete the row (unread or dismissing tentative).
+   */
+  private void clearLineReviewedInTransaction(
+      Connection con,
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar)
+      throws SQLException {
+    String select =
+        "SELECT review_status, tentative_carryover FROM account_patch_line_reviews WHERE "
+            + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+            + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+            + "AND end_line = ? AND end_char = ?";
+    try (PreparedStatement sel = con.prepareStatement(select)) {
+      bindLineGeometry(
+          sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+      try (ResultSet rs = sel.executeQuery()) {
+        if (!rs.next()) {
+          return;
+        }
+        ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
+        boolean carry = rs.getBoolean(2);
+        if (current == ReviewStatus.READ && carry) {
+          try (PreparedStatement upd =
+              con.prepareStatement(
+                  "UPDATE account_patch_line_reviews SET review_status = ? WHERE "
+                      + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+                      + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+                      + "AND end_line = ? AND end_char = ?")) {
+            upd.setShort(1, ReviewStatus.TENTATIVELY_READ.toDbValue());
+            bindLineGeometry(
+                upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+            upd.executeUpdate();
+          }
+        } else {
+          try (PreparedStatement del =
+              con.prepareStatement(
+                  "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
+                      + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
+                      + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
+            bindLineGeometry(
+                del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+            del.executeUpdate();
+          }
+        }
+      }
     }
   }
 
@@ -420,7 +613,8 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .build());
         Connection con = ds.getConnection()) {
       String sql =
-          "SELECT file_name, line_number, side, start_line, start_char, end_line, end_char "
+          "SELECT file_name, line_number, side, start_line, start_char, end_line, end_char, "
+              + "review_status "
               + "FROM account_patch_line_reviews "
               + "WHERE account_id = ? AND change_id = ? AND patch_set_id = ?";
       if (path != null) {
@@ -445,7 +639,8 @@ public abstract class JdbcAccountPatchLineReviewStore
                     rs.getInt("start_line"),
                     rs.getInt("start_char"),
                     rs.getInt("end_line"),
-                    rs.getInt("end_char")));
+                    rs.getInt("end_char"),
+                    ReviewStatus.fromDbValue(rs.getShort("review_status"))));
           }
           ImmutableList<ReviewedLine> lines = builder.build();
           if (lines.isEmpty()) {

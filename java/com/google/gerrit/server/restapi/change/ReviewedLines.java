@@ -60,7 +60,7 @@ public class ReviewedLines {
               LineReviewedInfo info = new LineReviewedInfo();
               info.line = line.lineNumber();
               info.side = line.getSide();
-              info.status = ReviewStatus.READ;
+              info.status = line.reviewStatus();
               if (line.startLine() != line.endLine()
                   || line.startChar() != 0
                   || line.endChar() != 0) {

@@ -31,5 +31,23 @@ public enum ReviewStatus {
   TENTATIVELY_READ,
 
   /** The region is not read for this reviewer on this patch set. */
-  UNREAD,
+  UNREAD;
+
+  /**
+   * Value persisted in {@code account_patch_line_reviews.review_status}. Only {@link #READ} and
+   * {@link #TENTATIVELY_READ} are stored; {@link #UNREAD} is represented by absence of a row.
+   */
+  public short toDbValue() {
+    return (short) ordinal();
+  }
+
+  /** Inverse of {@link #toDbValue()} for rows in {@code account_patch_line_reviews}. */
+  public static ReviewStatus fromDbValue(short value) {
+    for (ReviewStatus s : values()) {
+      if (s.ordinal() == value) {
+        return s;
+      }
+    }
+    return READ;
+  }
 }

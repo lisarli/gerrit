@@ -20,7 +20,7 @@ import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
-import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.restapi.NotImplementedException;
 import java.util.Collection;
@@ -58,6 +58,9 @@ public interface AccountPatchLineReviewStore {
 
     public abstract int endChar();
 
+    /** Stored status; {@link ReviewStatus#UNREAD} does not appear. */
+    public abstract ReviewStatus reviewStatus();
+
     public static ReviewedLine create(
         String path,
         int lineNumber,
@@ -65,9 +68,10 @@ public interface AccountPatchLineReviewStore {
         int startLine,
         int startChar,
         int endLine,
-        int endChar) {
+        int endChar,
+        ReviewStatus reviewStatus) {
       return new AutoValue_AccountPatchLineReviewStore_ReviewedLine(
-          path, lineNumber, side, startLine, startChar, endLine, endChar);
+          path, lineNumber, side, startLine, startChar, endLine, endChar, reviewStatus);
     }
 
     public Side getSide() {

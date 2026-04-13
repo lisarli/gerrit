@@ -21,6 +21,7 @@ import com.google.gerrit.server.config.SitePaths;
 import com.google.gerrit.server.config.ThreadSettingsConfig;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
 import org.eclipse.jgit.lib.Config;
@@ -59,7 +60,9 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
             + "start_line INT64 NOT NULL DEFAULT (1),"
             + "start_char INT64 NOT NULL DEFAULT (0),"
             + "end_line INT64 NOT NULL DEFAULT (1),"
-            + "end_char INT64 NOT NULL DEFAULT (0)"
+            + "end_char INT64 NOT NULL DEFAULT (0),"
+            + "review_status INT64 NOT NULL DEFAULT (0),"
+            + "tentative_carryover BOOL NOT NULL DEFAULT (FALSE)"
             + ") PRIMARY KEY(change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)");
   }

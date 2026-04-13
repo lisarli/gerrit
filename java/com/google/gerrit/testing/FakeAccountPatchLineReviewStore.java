@@ -20,6 +20,7 @@ import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.events.LifecycleListener;
 import com.google.gerrit.extensions.registration.DynamicItem;
@@ -77,6 +78,10 @@ public class FakeAccountPatchLineReviewStore
 
     abstract int endChar();
 
+    abstract ReviewStatus reviewStatus();
+
+    abstract boolean tentativeCarryover();
+
     static LineEntity create(
         PatchSet.Id psId,
         Account.Id accountId,
@@ -86,9 +91,21 @@ public class FakeAccountPatchLineReviewStore
         int startLine,
         int startChar,
         int endLine,
-        int endChar) {
+        int endChar,
+        ReviewStatus reviewStatus,
+        boolean tentativeCarryover) {
       return new AutoValue_FakeAccountPatchLineReviewStore_LineEntity(
-          psId, accountId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+          psId,
+          accountId,
+          path,
+          lineNumber,
+          side,
+          startLine,
+          startChar,
+          endLine,
+          endChar,
+          reviewStatus,
+          tentativeCarryover);
     }
   }
 
@@ -117,6 +134,33 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /** Caller must hold {@code synchronized (store)}. */
+  private Optional<LineEntity> findEntity(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar) {
+    for (LineEntity e : store) {
+      if (e.psId().equals(psId)
+          && e.accountId().equals(accountId)
+          && e.path().equals(path)
+          && e.lineNumber() == lineNumber
+          && e.side() == side
+          && e.startLine() == startLine
+          && e.startChar() == startChar
+          && e.endLine() == endLine
+          && e.endChar() == endChar) {
+        return Optional.of(e);
+      }
+    }
+    return Optional.empty();
+  }
+
   @Override
   public boolean markLineReviewed(
       PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
@@ -127,8 +171,8 @@ public class FakeAccountPatchLineReviewStore
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
     synchronized (store) {
-      LineEntity entity =
-          LineEntity.create(
+      Optional<LineEntity> existing =
+          findEntity(
               psId,
               accountId,
               path,
@@ -138,7 +182,42 @@ public class FakeAccountPatchLineReviewStore
               startChar[0],
               endLine[0],
               endChar[0]);
-      return store.add(entity);
+      if (existing.isEmpty()) {
+        return store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                ReviewStatus.READ,
+                false));
+      }
+      LineEntity e = existing.get();
+      if (e.reviewStatus() == ReviewStatus.READ) {
+        return false;
+      }
+      if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
+        store.remove(e);
+        return store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                ReviewStatus.READ,
+                e.tentativeCarryover()));
+      }
+      return false;
     }
   }
 
@@ -164,8 +243,8 @@ public class FakeAccountPatchLineReviewStore
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
     synchronized (store) {
-      store.remove(
-          LineEntity.create(
+      Optional<LineEntity> existing =
+          findEntity(
               psId,
               accountId,
               path,
@@ -174,7 +253,27 @@ public class FakeAccountPatchLineReviewStore
               startLine[0],
               startChar[0],
               endLine[0],
-              endChar[0]));
+              endChar[0]);
+      if (existing.isEmpty()) {
+        return;
+      }
+      LineEntity e = existing.get();
+      store.remove(e);
+      if (e.reviewStatus() == ReviewStatus.READ && e.tentativeCarryover()) {
+        store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                ReviewStatus.TENTATIVELY_READ,
+                true));
+      }
     }
   }
 
@@ -237,7 +336,8 @@ public class FakeAccountPatchLineReviewStore
                 entity.startLine(),
                 entity.startChar(),
                 entity.endLine(),
-                entity.endChar()));
+                entity.endChar(),
+                entity.reviewStatus()));
       }
       ImmutableList<ReviewedLine> lines = builder.build();
       if (lines.isEmpty()) {
