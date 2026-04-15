@@ -21,12 +21,14 @@ import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.PatchSetWithReviewedLines;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.ReviewedLine;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.Locale;
 import java.util.Optional;
 import org.junit.After;
 import org.junit.Before;
@@ -93,6 +95,40 @@ public class JdbcAccountPatchLineReviewStoreTest {
     return input;
   }
 
+  private void insertReviewedRow(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int line,
+      ReviewStatus status,
+      boolean tentativeCarryover)
+      throws Exception {
+
+    try (Connection con = store.getConnection();
+        Statement stmt = con.createStatement()) {
+      String sql =
+          String.format(
+              Locale.US,
+              "INSERT INTO account_patch_line_reviews "
+                  + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+                  + "start_line, start_char, end_line, end_char, review_status, tentative_carryover) "
+                  + "VALUES (%d, %d, %d, '%s', %d, %d, %d, %d, %d, %d, %d, %s)",
+              accountId.get(),
+              psId.changeId().get(),
+              psId.get(),
+              path,
+              line,
+              /* side=REVISION */ 1,
+              line,
+              0,
+              line,
+              0,
+              status.toDbValue(),
+              tentativeCarryover ? "TRUE" : "FALSE");
+      stmt.executeUpdate(sql);
+    }
+  }
+
   // -- tests --
 
   @Test
@@ -107,6 +143,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     assertThat(line.lineNumber()).isEqualTo(5);
     assertThat(line.path()).isEqualTo(FILE_A);
     assertThat(line.getSide()).isEqualTo(Side.REVISION);
+    assertThat(line.reviewStatus()).isEqualTo(ReviewStatus.READ);
   }
 
   @Test
@@ -225,5 +262,32 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A)).isEmpty();
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_2, FILE_A)).isPresent();
+  }
+
+  @Test
+  public void clearReadRestoresTentativeWhenCarryover() throws Exception {
+    insertReviewedRow(PS_1, ACCOUNT_1, FILE_A, 5, ReviewStatus.TENTATIVELY_READ, true);
+
+    boolean upgraded = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+    assertThat(upgraded).isTrue();
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A).get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.READ);
+
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+
+    Optional<PatchSetWithReviewedLines> after = store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A);
+    assertThat(after).isPresent();
+    assertThat(after.get().lines()).hasSize(1);
+    assertThat(after.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void clearTentativeRowRemovesLine() throws Exception {
+    insertReviewedRow(PS_1, ACCOUNT_1, FILE_A, 7, ReviewStatus.TENTATIVELY_READ, true);
+
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A)).isEmpty();
   }
 }
