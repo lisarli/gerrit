@@ -16,6 +16,7 @@ package com.google.gerrit.testing;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -313,6 +314,60 @@ public class FakeAccountPatchLineReviewStore
         }
       }
       store.removeAll(toRemove);
+    }
+  }
+
+  @Override
+  public ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
+    synchronized (store) {
+      ImmutableSet.Builder<Account.Id> b = ImmutableSet.builder();
+      for (LineEntity entity : store) {
+        if (entity.psId().equals(psId)) {
+          b.add(entity.accountId());
+        }
+      }
+      return b.build();
+    }
+  }
+
+  @Override
+  public void insertPropagatedTentativeReviews(
+      PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
+    if (lines == null || lines.isEmpty()) {
+      return;
+    }
+    synchronized (store) {
+      for (ReviewedLine line : lines) {
+        if (line == null) {
+          continue;
+        }
+        if (findEntity(
+                psId,
+                accountId,
+                line.path(),
+                line.lineNumber(),
+                line.side(),
+                line.startLine(),
+                line.startChar(),
+                line.endLine(),
+                line.endChar())
+            .isPresent()) {
+          continue;
+        }
+        store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                line.path(),
+                line.lineNumber(),
+                line.side(),
+                line.startLine(),
+                line.startChar(),
+                line.endLine(),
+                line.endChar(),
+                ReviewStatus.TENTATIVELY_READ,
+                true));
+      }
     }
   }
 

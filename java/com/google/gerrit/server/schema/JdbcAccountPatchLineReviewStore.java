@@ -18,6 +18,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.flogger.FluentLogger;
 import com.google.common.primitives.Ints;
 import com.google.gerrit.entities.Account;
@@ -598,6 +599,99 @@ public abstract class JdbcAccountPatchLineReviewStore
       stmt.executeUpdate();
     } catch (SQLException e) {
       throw convertError("delete", e);
+    }
+  }
+
+  @Override
+  public ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
+    try (TraceTimer ignored =
+            TraceContext.newTimer(
+                "List accounts with line reviews on patch set",
+                Metadata.builder().patchSetId(psId.get()).build());
+        Connection con = ds.getConnection();
+        PreparedStatement stmt =
+            con.prepareStatement(
+                "SELECT DISTINCT account_id FROM account_patch_line_reviews WHERE change_id = ? "
+                    + "AND patch_set_id = ?")) {
+      stmt.setInt(1, psId.changeId().get());
+      stmt.setInt(2, psId.get());
+      try (ResultSet rs = stmt.executeQuery()) {
+        ImmutableSet.Builder<Account.Id> b = ImmutableSet.builder();
+        while (rs.next()) {
+          b.add(Account.id(rs.getInt(1)));
+        }
+        return b.build();
+      }
+    } catch (SQLException e) {
+      throw convertError("select", e);
+    }
+  }
+
+  @Override
+  public void insertPropagatedTentativeReviews(
+      PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
+    if (lines == null || lines.isEmpty()) {
+      return;
+    }
+    String exists =
+        "SELECT 1 FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
+            + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
+            + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?";
+    String insert =
+        "INSERT INTO account_patch_line_reviews "
+            + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+            + "start_line, start_char, end_line, end_char, review_status, tentative_carryover) "
+            + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    try (TraceTimer ignored =
+            TraceContext.newTimer(
+                "Insert propagated tentative line reviews",
+                Metadata.builder()
+                    .patchSetId(psId.get())
+                    .accountId(accountId.get())
+                    .build());
+        Connection con = ds.getConnection()) {
+      try (PreparedStatement existsStmt = con.prepareStatement(exists);
+          PreparedStatement insertStmt = con.prepareStatement(insert)) {
+        for (ReviewedLine line : lines) {
+          if (line == null) {
+            continue;
+          }
+          bindLineGeometry(
+              existsStmt,
+              1,
+              accountId,
+              psId,
+              line.path(),
+              line.lineNumber(),
+              line.side(),
+              line.startLine(),
+              line.startChar(),
+              line.endLine(),
+              line.endChar());
+          try (ResultSet rs = existsStmt.executeQuery()) {
+            if (rs.next()) {
+              continue;
+            }
+          }
+          bindLineGeometry(
+              insertStmt,
+              1,
+              accountId,
+              psId,
+              line.path(),
+              line.lineNumber(),
+              line.side(),
+              line.startLine(),
+              line.startChar(),
+              line.endLine(),
+              line.endChar());
+          insertStmt.setShort(11, ReviewStatus.TENTATIVELY_READ.toDbValue());
+          insertStmt.setBoolean(12, true);
+          insertStmt.executeUpdate();
+        }
+      }
+    } catch (SQLException e) {
+      throw convertError("insertPropagatedTentativeReviews", e);
     }
   }
 

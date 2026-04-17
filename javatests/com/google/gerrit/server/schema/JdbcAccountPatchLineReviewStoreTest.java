@@ -16,6 +16,8 @@ package com.google.gerrit.server.schema;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -289,5 +291,41 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
 
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A)).isEmpty();
+  }
+
+  @Test
+  public void accountsWithLineReviews_returnsDistinctAccounts() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_B, lineInput(2));
+
+    assertThat(store.accountsWithLineReviews(PS_1))
+        .containsExactlyElementsIn(ImmutableSet.of(ACCOUNT_1, ACCOUNT_2));
+    assertThat(store.accountsWithLineReviews(PS_2)).isEmpty();
+  }
+
+  @Test
+  public void insertPropagatedTentativeReviews_insertsTentativeWithCarryover() {
+    ReviewedLine line =
+        ReviewedLine.create(
+            FILE_A, 4, (short) 1, 4, 0, 4, 0, ReviewStatus.READ);
+    store.insertPropagatedTentativeReviews(PS_2, ACCOUNT_1, ImmutableList.of(line));
+
+    Optional<PatchSetWithReviewedLines> found =
+        store.findReviewedLines(PS_2, ACCOUNT_1, FILE_A);
+    assertThat(found).isPresent();
+    ReviewedLine stored = found.get().lines().get(0);
+    assertThat(stored.reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+    assertThat(stored.lineNumber()).isEqualTo(4);
+  }
+
+  @Test
+  public void insertPropagatedTentativeReviews_skipsExistingKey() {
+    ReviewedLine line =
+        ReviewedLine.create(
+            FILE_A, 4, (short) 1, 4, 0, 4, 0, ReviewStatus.TENTATIVELY_READ);
+    store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
+    store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
+
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, null).get().lines()).hasSize(1);
   }
 }

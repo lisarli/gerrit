@@ -96,6 +96,7 @@ public class PatchSetInserter implements BatchUpdateOp {
   private final DiffOperationsForCommitValidation.Factory diffOperationsForCommitValidationFactory;
   private final PluginSetContext<ValidationOptionsListener> validationOptionsListeners;
   private final PluginSetContext<CommitValidationInfoListener> commitValidationInfoListeners;
+  private final LineReviewPropagation lineReviewPropagation;
 
   // Assisted-injected fields.
   private final PatchSet.Id psId;
@@ -131,6 +132,7 @@ public class PatchSetInserter implements BatchUpdateOp {
   private boolean oldWorkInProgressState;
   private ApprovalCopier.Result approvalCopierResult;
   private ObjectId preUpdateMetaId;
+  private PatchSet priorPatchSet;
 
   @Inject
   public PatchSetInserter(
@@ -150,6 +152,7 @@ public class PatchSetInserter implements BatchUpdateOp {
       DiffOperationsForCommitValidation.Factory diffOperationsForCommitValidationFactory,
       PluginSetContext<ValidationOptionsListener> validationOptionsListeners,
       PluginSetContext<CommitValidationInfoListener> commitValidationInfoListeners,
+      LineReviewPropagation lineReviewPropagation,
       @Assisted ChangeNotes notes,
       @Assisted PatchSet.Id psId,
       @Assisted ObjectId commitId) {
@@ -169,6 +172,7 @@ public class PatchSetInserter implements BatchUpdateOp {
     this.diffOperationsForCommitValidationFactory = diffOperationsForCommitValidationFactory;
     this.validationOptionsListeners = validationOptionsListeners;
     this.commitValidationInfoListeners = commitValidationInfoListeners;
+    this.lineReviewPropagation = lineReviewPropagation;
 
     this.origNotes = notes;
     this.psId = psId;
@@ -335,11 +339,11 @@ public class PatchSetInserter implements BatchUpdateOp {
               change.getId(), ChangeUtil.status(change)));
     }
 
+    priorPatchSet = psUtil.current(ctx.getNotes());
     List<String> newGroups = groups;
     if (newGroups.isEmpty()) {
-      PatchSet prevPs = psUtil.current(ctx.getNotes());
-      if (prevPs != null) {
-        newGroups = prevPs.groups();
+      if (priorPatchSet != null) {
+        newGroups = priorPatchSet.groups();
       }
     }
     patchSet =
@@ -443,6 +447,10 @@ public class PatchSetInserter implements BatchUpdateOp {
 
     if (workInProgress != null && oldWorkInProgressState != workInProgress) {
       wipStateChanged.fire(ctx.getChangeData(change), patchSet, ctx.getAccount(), ctx.getWhen());
+    }
+
+    if (priorPatchSet != null) {
+      lineReviewPropagation.propagateOnNewPatchSet(change, priorPatchSet, patchSet);
     }
   }
 

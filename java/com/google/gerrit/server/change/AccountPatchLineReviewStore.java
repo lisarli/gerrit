@@ -16,6 +16,7 @@ package com.google.gerrit.server.change;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -164,4 +165,29 @@ public interface AccountPatchLineReviewStore {
    */
   Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path);
+
+  /**
+   * Accounts that have at least one line review row stored for the given patch set.
+   *
+   * @param psId patch set ID
+   */
+  default ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
+    throw new NotImplementedException(
+        "accountsWithLineReviews() is not implemented for this AccountPatchLineReviewStore.");
+  }
+
+  /**
+   * Inserts {@link ReviewStatus#TENTATIVELY_READ} rows with {@code tentative_carryover = true} for
+   * markers carried from a prior patch set. Skips a row if the primary key already exists.
+   *
+   * @param psId new patch set ID
+   * @param accountId account ID
+   * @param lines geometry and side for each marker; {@link ReviewedLine#reviewStatus()} is ignored
+   */
+  default void insertPropagatedTentativeReviews(
+      PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
+    throw new NotImplementedException(
+        "insertPropagatedTentativeReviews() is not implemented for this"
+            + " AccountPatchLineReviewStore.");
+  }
 }
