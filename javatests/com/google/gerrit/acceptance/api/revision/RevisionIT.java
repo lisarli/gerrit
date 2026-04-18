@@ -69,6 +69,7 @@ import com.google.gerrit.entities.Permission;
 import com.google.gerrit.entities.Project;
 import com.google.gerrit.entities.RefNames;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.common.LineReviewedInfo;
 import com.google.gson.reflect.TypeToken;
@@ -1729,6 +1730,37 @@ public class RevisionIT extends AbstractDaemonTest {
         accountPatchLineReviewStore.findReviewedLines(
             r.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
     assertThat(found).isEmpty();
+  }
+
+  @Test
+  public void lineReviewsArePropagatedToNextPatchSetAsTentative() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    // Insert two lines at the top so the previously reviewed line 5 moves to line 7.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isPresent();
+    assertThat(found.get().lines()).hasSize(1);
+    assertThat(found.get().lines().get(0).lineNumber()).isEqualTo(7);
+    assertThat(found.get().lines().get(0).reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
   }
 
   // -- HTTP-level tests for the reviewed_lines REST endpoint --

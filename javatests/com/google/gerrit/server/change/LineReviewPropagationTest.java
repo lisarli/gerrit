@@ -54,6 +54,10 @@ import org.mockito.Mock;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.junit.MockitoJUnitRunner;
 
+/**
+ * Unit tests for {@link LineReviewPropagation}. Propagation is revision-side only; see {@code
+ * ignoresParentSideMarkers}.
+ */
 @RunWith(MockitoJUnitRunner.class)
 public class LineReviewPropagationTest {
   private static final Project.NameKey PROJECT = Project.nameKey("test");
