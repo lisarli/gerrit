@@ -1768,7 +1768,11 @@ public class RevisionIT extends AbstractDaemonTest {
   // -- HTTP-level tests for the reviewed_lines REST endpoint --
 
   private String reviewedLinesUrl(String changeId) {
-    return "/changes/" + changeId + "/revisions/current/files/" + FILE_NAME + "/reviewed_lines";
+    return reviewedLinesUrl(changeId, FILE_NAME);
+  }
+
+  private String reviewedLinesUrl(String changeId, String fileName) {
+    return "/changes/" + changeId + "/revisions/current/files/" + fileName + "/reviewed_lines";
   }
 
   private String fileLineReviewProgressUrl(String changeId, String fileName) {
@@ -1872,6 +1876,62 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(a.percentRead).isWithin(0.001).of(0.0);
     assertThat(a.percentTentativelyRead).isWithin(0.001).of(100.0 / 12.0);
     assertThat(a.percentUnread).isWithin(0.001).of(100.0 * 11 / 12);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_fullyReviewedFile_percentReadIs100() throws Exception {
+    PushOneCommit.Result r = createChange(SUBJECT, FILE_NAME, "r1\nr2\nr3\n");
+    String url = reviewedLinesUrl(r.getChangeId());
+    for (int line = 1; line <= 3; line++) {
+      LineReviewedInput input = new LineReviewedInput();
+      input.line = line;
+      input.side = Side.REVISION;
+      adminRestSession.put(url, input).assertCreated();
+    }
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(3);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.percentRead).isWithin(0.001).of(100.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(0.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_unreviewedFile_percentReadIsZero() throws Exception {
+    String fiveLines = "l1\nl2\nl3\nl4\nl5\n";
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            ImmutableMap.of(FILE_NAME, fiveLines, "b.txt", fiveLines));
+    PushOneCommit.Result r = push.to("refs/for/master");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId(), FILE_NAME), input).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), "b.txt"));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(5);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.percentRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(100.0);
   }
 
   @Test
