@@ -22,6 +22,11 @@ jobs:
       - name: Install tools/node_tools dependencies
         run: cd tools/node_tools && yarn install --frozen-lockfile
 
+      # Materialize polygerrit-ui/app/node_modules so @ui_npm matches CI and developer machines, and
+      # lockfile issues fail before a long Bazel analysis.
+      - name: Install polygerrit-ui/app dependencies
+        run: cd polygerrit-ui/app && yarn install --frozen-lockfile
+
       - name: Install Bazelisk
         run: |
           mkdir -p "$HOME/.local/bin"
