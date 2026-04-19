@@ -161,6 +161,7 @@ public class ChangeRestApiModule extends RestApiModule {
     get(FILE_KIND, "reviewed_lines").to(ReviewedLines.GetReviewedLines.class);
     put(FILE_KIND, "reviewed_lines").to(ReviewedLines.PutReviewedLine.class);
     delete(FILE_KIND, "reviewed_lines").to(ReviewedLines.DeleteReviewedLine.class);
+    get(FILE_KIND, "line_review_progress").to(GetFileLineReviewProgress.class);
 
     child(REVISION_KIND, "fixes").to(Fixes.class);
     post(FIX_KIND, "apply").to(ApplyStoredFix.class);
