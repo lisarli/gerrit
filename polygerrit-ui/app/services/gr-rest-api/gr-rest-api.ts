@@ -135,6 +135,28 @@ export interface LineReviewedInput {
   };
 }
 
+export interface LineReviewHistoryInfo {
+  account_id?: number;
+  accountId?: number;
+  patch_set_id?: number;
+  patchSetId?: number;
+  file: string;
+  line: number;
+  side?: CommentSide;
+  range?: {
+    start_line?: number;
+    startLine?: number;
+    start_character?: number;
+    startCharacter?: number;
+    end_line?: number;
+    endLine?: number;
+    end_character?: number;
+    endCharacter?: number;
+  };
+  action: 'MARKED' | 'UNMARKED' | string;
+  timestamp: string;
+}
+
 export interface GetDiffCommentsOutput {
   baseComments: CommentInfo[];
   comments: CommentInfo[];
@@ -951,6 +973,10 @@ export interface RestApiService extends Finalizable {
     patchNum: PatchSetNum,
     path: string
   ): Promise<LineReviewedInfo[] | undefined>;
+
+  getReviewedLineHistory(
+    changeNum: NumericChangeId
+  ): Promise<LineReviewHistoryInfo[] | undefined>;
 
   saveReviewedLine(
     changeNum: NumericChangeId,

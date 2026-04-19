@@ -544,6 +544,9 @@ export const grRestApiMock: RestApiService = {
   getReviewedLines(): Promise<undefined> {
     return Promise.resolve(undefined);
   },
+  getReviewedLineHistory(): Promise<undefined> {
+    return Promise.resolve(undefined);
+  },
   saveReviewedLine(): Promise<Response> {
     return Promise.resolve(new Response());
   },

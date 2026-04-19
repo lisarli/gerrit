@@ -15,7 +15,6 @@ import '../../shared/gr-weblink/gr-weblink';
 import '../../shared/revision-info/revision-info';
 import '../gr-apply-fix-dialog/gr-apply-fix-dialog';
 import '../gr-diff-host/gr-diff-host';
-import '../gr-line-review-marker/gr-line-review-marker';
 import '../gr-diff-mode-selector/gr-diff-mode-selector';
 import '../gr-diff-preferences-dialog/gr-diff-preferences-dialog';
 import '../gr-patch-range-select/gr-patch-range-select';
@@ -36,6 +35,8 @@ import {
 import {CommentAnchorTapEventDetail} from '../../shared/gr-comment/gr-comment';
 import {ChangeComments} from '../../diff/gr-comment-api/gr-comment-api';
 import {
+  AccountDetailInfo,
+  AccountInfo,
   BasePatchSetNum,
   Comment,
   CommentMap,
@@ -49,6 +50,7 @@ import {
   RepoName,
   RevisionPatchSetNum,
 } from '../../../types/common';
+import {ReviewerState} from '../../../api/rest-api';
 import {DiffInfo, DiffPreferencesInfo, WebLinkInfo} from '../../../types/diff';
 import {
   DiffLayer,
@@ -106,12 +108,12 @@ import {
   FileNameToNormalizedFileInfoMap,
   filesModelToken,
 } from '../../../models/change/files-model';
-import {LineMarkerToggledEvent} from '../gr-line-review-marker/gr-line-review-marker';
 import {
   LineReviewMarkerService,
   MockLineReviewMarkerService,
   RestLineReviewMarkerService,
 } from '../gr-line-review-marker/line-review-marker-service';
+import {LineReviewHistoryInfo} from '../../../services/gr-rest-api/gr-rest-api';
 import {isImageDiff} from '../../../utils/diff-util';
 import {formStyles} from '../../../styles/form-styles';
 import {NormalizedFileInfo} from '../../change/gr-file-list/gr-file-list';
@@ -150,13 +152,14 @@ interface ReviewerDot {
   label: string;
 }
 
-const REVIEWER_HISTORY: ReviewerHistoryEntry[] = [
-  {id: 'hena', name: 'Hena', color: '#4285f4'},
-  {id: 'lisa', name: 'Lisa', color: '#a142f4'},
-  {id: 'serena', name: 'Serena', color: '#ff6d01'},
+const REVIEWER_HISTORY_COLORS = [
+  '#4285f4',
+  '#a142f4',
+  '#ff6d01',
+  '#0b8043',
+  '#c5221f',
+  '#00796b',
 ];
-
-const ACTIVE_REVIEWER_ID = 'hena';
 
 class LineReadStatusLayer implements DiffLayer {
   private listeners: DiffLayerListener[] = [];
@@ -457,10 +460,19 @@ export class GrDiffView extends LitElement {
   private selectedDiffLine?: DisplayLine;
 
   @state()
-  private reviewerHistory = REVIEWER_HISTORY;
+  private reviewerHistory: ReviewerHistoryEntry[] = [];
+
+  @state()
+  private currentReviewer?: AccountDetailInfo;
 
   @state()
   private currentReviewerReviewedLines: string[] = [];
+
+  @state()
+  private reviewerReviewedLineKeys = new Map<string, Set<string>>();
+
+  @state()
+  private reviewHistoryMinimized = false;
 
   // visible for testing
   reviewedFiles = new Set<string>();
@@ -506,6 +518,8 @@ export class GrDiffView extends LitElement {
 
   // Show the popup for navigating to next file keyboard shortcut only once
   private hasShownNavigateToFileToast = new Map<string, boolean>();
+
+  private lineReviewHistoryRequestId = 0;
 
   @state()
   cursor?: GrDiffCursor;
@@ -603,6 +617,15 @@ export class GrDiffView extends LitElement {
     );
     subscribe(
       this,
+      () => this.getUserModel().account$,
+      account => {
+        this.currentReviewer = account;
+        this.syncReviewerHistory();
+        this.syncCurrentReviewerReviewedLines();
+      }
+    );
+    subscribe(
+      this,
       () => this.getCommentsModel().changeComments$,
       changeComments => {
         this.changeComments = changeComments;
@@ -628,7 +651,10 @@ export class GrDiffView extends LitElement {
       change => {
         // The diff view is tied to a specific change number, so don't update
         // change to undefined.
-        if (change) this.change = change;
+        if (change) {
+          this.change = change;
+          this.syncReviewerHistory();
+        }
       }
     );
     subscribe(
@@ -945,10 +971,6 @@ export class GrDiffView extends LitElement {
         .diffContainer.sidebarOpen {
           margin-left: var(--sidebar-width);
         }
-        .lineReviewMarker {
-          display: flex;
-          justify-content: flex-end;
-        }
         .reviewHistoryPanel {
           background: var(--background-color-primary);
           border: 1px solid var(--border-color);
@@ -959,6 +981,10 @@ export class GrDiffView extends LitElement {
           position: sticky;
           top: var(--spacing-xl);
         }
+        .reviewHistoryPanel.minimized {
+          flex: 0 0 auto;
+          width: fit-content;
+        }
         .reviewHistoryHeader {
           align-items: center;
           background: var(--background-color-secondary);
@@ -967,6 +993,13 @@ export class GrDiffView extends LitElement {
           justify-content: space-between;
           padding: var(--spacing-l);
         }
+        .reviewHistoryPanel.minimized .reviewHistoryHeader {
+          border-bottom: 0;
+        }
+        .reviewHistoryHeaderContent {
+          display: grid;
+          gap: var(--spacing-xxs);
+        }
         .reviewHistoryTitle {
           font-size: var(--font-size-h3);
           font-weight: var(--font-weight-bold);
@@ -974,6 +1007,19 @@ export class GrDiffView extends LitElement {
         .reviewHistorySubtitle {
           color: var(--deemphasized-text-color);
           font-size: var(--font-size-small);
+        }
+        .reviewHistoryToggle {
+          background: transparent;
+          border: 1px solid var(--border-color);
+          border-radius: 999px;
+          color: var(--link-color);
+          cursor: pointer;
+          font: inherit;
+          padding: 4px var(--spacing-m);
+          white-space: nowrap;
+        }
+        .reviewHistoryToggle:hover {
+          background: var(--background-color-primary);
         }
         .reviewHistoryBody {
           display: grid;
@@ -1132,6 +1178,7 @@ export class GrDiffView extends LitElement {
     ) {
       this.reloadDiff();
       this.lineReadStatusLayer.clearMarks();
+      this.reviewerReviewedLineKeys = new Map();
       this.currentReviewerReviewedLines = [];
       if (this.changeNum && this.patchNum) {
         this.lineReviewMarkerService = new RestLineReviewMarkerService(
@@ -1203,15 +1250,6 @@ export class GrDiffView extends LitElement {
       ${this.renderStickyHeader()}
       <h2 class="assistive-tech-only">Diff view</h2>
       <div class="diffContainer ${this.shownSidebar && 'sidebarOpen'}">
-        <div class="lineReviewMarker">
-          <gr-line-review-marker
-            .selectedLine=${this.selectedDiffLine}
-            .path=${this.path}
-            .disabled=${!this.loggedIn}
-            .markerService=${this.lineReviewMarkerService}
-            @line-marker-toggled=${this.onLineMarkerToggled}
-          ></gr-line-review-marker>
-        </div>
         <div class="diffBody">
           <div class="diffHostContainer">
             <gr-diff-host
@@ -1277,87 +1315,119 @@ export class GrDiffView extends LitElement {
           )
         : [];
     return html`
-      <aside class="reviewHistoryPanel">
+      <aside
+        class="reviewHistoryPanel ${this.reviewHistoryMinimized
+          ? 'minimized'
+          : ''}"
+      >
         <div class="reviewHistoryHeader">
-          <div>
+          <div class="reviewHistoryHeaderContent">
             <div class="reviewHistoryTitle">History</div>
-            <div class="reviewHistorySubtitle">
-              Reviewer presence updates as lines are marked read.
-            </div>
-          </div>
-        </div>
-        <div class="reviewHistoryBody">
-          <div class="historySelection">
-            <div class="historySelectionTitle">
-              ${selectedLineNum ? `Line ${selectedLineNum}` : 'Select a line'}
-            </div>
-            ${reviewersForSelection.length
-              ? html`
-                  <div class="historySelectionNames">
-                    ${reviewersForSelection.map(
-                      reviewer => html`
-                        <span class="reviewerIdentity">
-                          <span
-                            class="reviewerSwatch"
-                            style=${styleMap({backgroundColor: reviewer.color})}
-                          ></span>
-                          <span>${reviewer.name}</span>
-                        </span>
-                      `
-                    )}
-                  </div>
-                `
+            ${this.reviewHistoryMinimized
+              ? nothing
               : html`
-                  <div class="historySelectionEmpty">
-                    No reviewer history for the current selection yet.
+                  <div class="reviewHistorySubtitle">
+                    Reviewer presence updates as lines are marked read.
                   </div>
                 `}
           </div>
-          <div class="reviewerList">
-            ${this.reviewerHistory.map(
-              reviewer => html`
-                <div class="reviewerRow">
-                  <div class="reviewerIdentity">
+          <button
+            class="reviewHistoryToggle"
+            type="button"
+            aria-expanded=${String(!this.reviewHistoryMinimized)}
+            @click=${this.onReviewHistoryToggle}
+          >
+            ${this.reviewHistoryMinimized ? 'Expand' : 'Minimize'}
+          </button>
+        </div>
+        ${this.reviewHistoryMinimized
+          ? nothing
+          : html`
+              <div class="reviewHistoryBody">
+                <div class="historySelection">
+                  <div class="historySelectionTitle">
+                    ${selectedLineNum
+                      ? `Line ${selectedLineNum}`
+                      : 'Select a line'}
+                  </div>
+                  ${reviewersForSelection.length
+                    ? html`
+                        <div class="historySelectionNames">
+                          ${reviewersForSelection.map(
+                            reviewer => html`
+                              <span class="reviewerIdentity">
+                                <span
+                                  class="reviewerSwatch"
+                                  style=${styleMap({
+                                    backgroundColor: reviewer.color,
+                                  })}
+                                ></span>
+                                <span>${reviewer.name}</span>
+                              </span>
+                            `
+                          )}
+                        </div>
+                      `
+                    : html`
+                        <div class="historySelectionEmpty">
+                          No reviewer history for the current selection yet.
+                        </div>
+                      `}
+                </div>
+                <div class="reviewerList">
+                  ${this.reviewerHistory.length
+                    ? this.reviewerHistory.map(
+                        reviewer => html`
+                          <div class="reviewerRow">
+                            <div class="reviewerIdentity">
+                              <span
+                                class="reviewerSwatch"
+                                style=${styleMap({
+                                  backgroundColor: reviewer.color,
+                                })}
+                              ></span>
+                              <span>${reviewer.name}</span>
+                            </div>
+                            ${this.isCurrentReviewer(reviewer.id)
+                              ? html`<span class="reviewerBadge">Live</span>`
+                              : html`<span></span>`}
+                            <span class="reviewerCount">
+                              ${this.getReviewerSummaryLabel(reviewer.id)}
+                            </span>
+                          </div>
+                        `
+                      )
+                    : html`
+                        <div class="historySelectionEmpty">
+                          No reviewers are assigned to this patch set yet.
+                        </div>
+                      `}
+                </div>
+                <div class="historyLegend">
+                  <span class="historyLegendItem">
                     <span
                       class="reviewerSwatch"
-                      style=${styleMap({backgroundColor: reviewer.color})}
+                      style=${styleMap({backgroundColor: '#34a853'})}
                     ></span>
-                    <span>${reviewer.name}</span>
-                  </div>
-                  ${reviewer.id === ACTIVE_REVIEWER_ID
-                    ? html`<span class="reviewerBadge">Live</span>`
-                    : html`<span></span>`}
-                  <span class="reviewerCount">
-                    ${this.getReviewerSummaryLabel(reviewer.id)}
+                    <span>Read</span>
+                  </span>
+                  <span class="historyLegendItem">
+                    <span
+                      class="reviewerSwatch"
+                      style=${styleMap({backgroundColor: '#fbbc04'})}
+                    ></span>
+                    <span>Tentative</span>
+                  </span>
+                  <span class="historyLegendItem">
+                    <span
+                      class="reviewerSwatch"
+                      style=${styleMap({backgroundColor: '#9aa0a6'})}
+                    ></span>
+                    <span>Unread</span>
                   </span>
                 </div>
-              `
-            )}
-          </div>
-          <div class="historyLegend">
-            <span class="historyLegendItem">
-              <span
-                class="reviewerSwatch"
-                style=${styleMap({backgroundColor: '#34a853'})}
-              ></span>
-              <span>Read</span>
-            </span>
-            <span class="historyLegendItem">
-              <span
-                class="reviewerSwatch"
-                style=${styleMap({backgroundColor: '#fbbc04'})}
-              ></span>
-              <span>Tentative</span>
-            </span>
-            <span class="historyLegendItem">
-              <span
-                class="reviewerSwatch"
-                style=${styleMap({backgroundColor: '#9aa0a6'})}
-              ></span>
-              <span>Unread</span>
-            </span>
-          </div>
-        </div>
+              </div>
+            `}
       </aside>
     `;
   }
@@ -2153,15 +2223,150 @@ export class GrDiffView extends LitElement {
     return `${path}:${lineNum}`;
   }
 
+  private getLineNumberFromKey(path: string, lineKey: string) {
+    const prefix = `${path}:`;
+    if (!lineKey.startsWith(prefix)) return;
+    const lineNum = Number(lineKey.slice(prefix.length));
+    if (!Number.isInteger(lineNum) || lineNum < 1) return;
+    return lineNum;
+  }
+
+  private onReviewHistoryToggle() {
+    this.reviewHistoryMinimized = !this.reviewHistoryMinimized;
+  }
+
+  private syncReviewerHistory() {
+    this.reviewerHistory = this.buildReviewerHistoryEntries(
+      this.change?.reviewers?.[ReviewerState.REVIEWER] ?? []
+    );
+  }
+
+  private buildReviewerHistoryEntries(reviewers: AccountInfo[]) {
+    const seenReviewerIds = new Set<string>();
+    const entries: ReviewerHistoryEntry[] = [];
+    for (const reviewer of reviewers) {
+      const reviewerId = this.getReviewerId(reviewer);
+      if (!reviewerId || seenReviewerIds.has(reviewerId)) continue;
+      seenReviewerIds.add(reviewerId);
+      entries.push({
+        id: reviewerId,
+        name: this.getReviewerName(reviewer),
+        color:
+          REVIEWER_HISTORY_COLORS[
+            entries.length % REVIEWER_HISTORY_COLORS.length
+          ],
+      });
+    }
+    return entries;
+  }
+
+  private getReviewerId(account?: AccountInfo) {
+    if (account?._account_id !== undefined) return String(account._account_id);
+    return account?.username ?? account?.email ?? account?.name;
+  }
+
+  private getReviewerName(account: AccountInfo) {
+    return (
+      account.display_name ??
+      account.name ??
+      account.username ??
+      account.email ??
+      (account._account_id !== undefined
+        ? `Account ${account._account_id}`
+        : 'Unknown reviewer')
+    );
+  }
+
+  private isCurrentReviewer(reviewerId: string) {
+    return reviewerId === this.getReviewerId(this.currentReviewer);
+  }
+
+  private getLineNumbersFromHistoryEntry(entry: LineReviewHistoryInfo) {
+    const startLine =
+      entry.range?.start_line ?? entry.range?.startLine ?? entry.line;
+    const endLine = entry.range?.end_line ?? entry.range?.endLine ?? entry.line;
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) return [];
+    const lineNumbers: number[] = [];
+    for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
+      lineNumbers.push(lineNum);
+    }
+    return lineNumbers;
+  }
+
+  private buildReviewerReviewedLineKeys(
+    historyEntries: LineReviewHistoryInfo[],
+    path: string,
+    patchNum: RevisionPatchSetNum
+  ) {
+    const reviewerLineKeys = new Map<string, Set<string>>();
+    const currentPatchNum = Number(patchNum);
+    if (!Number.isInteger(currentPatchNum)) return reviewerLineKeys;
+    for (const entry of historyEntries) {
+      if (entry.file !== path) continue;
+      const patchSetId = entry.patch_set_id ?? entry.patchSetId;
+      if (
+        patchSetId !== undefined &&
+        patchSetId !== currentPatchNum
+      ) {
+        continue;
+      }
+      if ((entry.side ?? CommentSide.REVISION) !== CommentSide.REVISION) continue;
+
+      const reviewerAccountId = entry.account_id ?? entry.accountId;
+      if (reviewerAccountId === undefined) continue;
+      const reviewerId = String(reviewerAccountId);
+      const currentReviewerLineKeys = new Set(
+        reviewerLineKeys.get(reviewerId) ?? []
+      );
+      for (const lineNum of this.getLineNumbersFromHistoryEntry(entry)) {
+        const lineKey = this.computeLineKey(path, lineNum);
+        if (entry.action === 'UNMARKED') {
+          currentReviewerLineKeys.delete(lineKey);
+        } else {
+          currentReviewerLineKeys.add(lineKey);
+        }
+      }
+      if (currentReviewerLineKeys.size > 0) {
+        reviewerLineKeys.set(reviewerId, currentReviewerLineKeys);
+      } else {
+        reviewerLineKeys.delete(reviewerId);
+      }
+    }
+    return reviewerLineKeys;
+  }
+
+  private syncCurrentReviewerReviewedLines(path = this.path) {
+    const currentReviewerId = this.getReviewerId(this.currentReviewer);
+    const reviewerLineKeys = currentReviewerId
+      ? this.reviewerReviewedLineKeys.get(currentReviewerId)
+      : undefined;
+    this.currentReviewerReviewedLines = [...(reviewerLineKeys ?? [])].sort();
+
+    this.lineReadStatusLayer.clearMarks();
+    if (!path) return;
+    for (const lineKey of this.currentReviewerReviewedLines) {
+      const lineNum = this.getLineNumberFromKey(path, lineKey);
+      if (!lineNum) continue;
+      this.lineReadStatusLayer.setMarked(path, lineNum, true);
+    }
+  }
+
   private updateCurrentReviewerLine(path: string, lineNum: number, marked: boolean) {
     const lineKey = this.computeLineKey(path, lineNum);
-    const next = new Set(this.currentReviewerReviewedLines);
-    if (marked) {
-      next.add(lineKey);
+    const reviewerId = this.getReviewerId(this.currentReviewer);
+    const currentReviewerLines = new Set(this.currentReviewerReviewedLines);
+    if (marked) currentReviewerLines.add(lineKey);
+    else currentReviewerLines.delete(lineKey);
+    this.currentReviewerReviewedLines = [...currentReviewerLines].sort();
+
+    if (!reviewerId) return;
+    const reviewerReviewedLineKeys = new Map(this.reviewerReviewedLineKeys);
+    if (currentReviewerLines.size > 0) {
+      reviewerReviewedLineKeys.set(reviewerId, currentReviewerLines);
     } else {
-      next.delete(lineKey);
+      reviewerReviewedLineKeys.delete(reviewerId);
     }
-    this.currentReviewerReviewedLines = [...next].sort();
+    this.reviewerReviewedLineKeys = reviewerReviewedLineKeys;
   }
 
   private hasReviewerReviewedLine(
@@ -2169,19 +2374,9 @@ export class GrDiffView extends LitElement {
     path: string,
     lineNum: number
   ) {
-    if (reviewerId === ACTIVE_REVIEWER_ID) {
-      return this.currentReviewerReviewedLines.includes(
-        this.computeLineKey(path, lineNum)
-      );
-    }
-    const pathWeight = [...path].reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    if (reviewerId === 'lisa') {
-      return (lineNum + pathWeight) % 4 === 0 || lineNum % 9 === 0;
-    }
-    if (reviewerId === 'serena') {
-      return (lineNum + pathWeight) % 7 === 0;
-    }
-    return false;
+    return this.reviewerReviewedLineKeys
+      .get(reviewerId)
+      ?.has(this.computeLineKey(path, lineNum)) ?? false;
   }
 
   private getReviewerDots(path: string, lineNum: number): ReviewerDot[] {
@@ -2194,18 +2389,7 @@ export class GrDiffView extends LitElement {
   }
 
   private getReviewerReviewedCount(reviewerId: string) {
-    if (reviewerId === ACTIVE_REVIEWER_ID) {
-      return this.currentReviewerReviewedLines.length;
-    }
-    const totalLines = this.getTotalReviewableLines();
-    if (!this.path || totalLines < 1) return 0;
-    let count = 0;
-    for (let lineNum = 1; lineNum <= totalLines; lineNum++) {
-      if (this.hasReviewerReviewedLine(reviewerId, this.path, lineNum)) {
-        count++;
-      }
-    }
-    return count;
+    return this.reviewerReviewedLineKeys.get(reviewerId)?.size ?? 0;
   }
 
   private getReviewerSummaryLabel(reviewerId: string) {
@@ -2232,33 +2416,26 @@ export class GrDiffView extends LitElement {
     }, 0);
   }
 
-  private onLineMarkerToggled(e: LineMarkerToggledEvent) {
-    if (typeof e.detail.lineNum !== 'number') return;
-    this.lineReadStatusLayer.setMarked(
-      e.detail.path,
-      e.detail.lineNum,
-      e.detail.marked
-    );
-    this.updateCurrentReviewerLine(e.detail.path, e.detail.lineNum, e.detail.marked);
-  }
-
   private async loadLineMarkers() {
-    if (!this.changeNum || !this.patchNum || !this.path || !this.loggedIn)
+    if (!this.changeNum || !this.patchNum || !this.path || !this.loggedIn) {
+      this.reviewerReviewedLineKeys = new Map();
+      this.currentReviewerReviewedLines = [];
+      this.lineReadStatusLayer.clearMarks();
       return;
-    const infos = await getAppContext().restApiService.getReviewedLines(
-      this.changeNum,
-      this.patchNum,
-      this.path
-    );
-    if (!infos) return;
-    const currentReviewerLines = new Set<string>();
-    for (const info of infos) {
-      if ((info.side ?? 'REVISION') === 'REVISION') {
-        this.lineReadStatusLayer.setMarked(this.path, info.line, true);
-        currentReviewerLines.add(this.computeLineKey(this.path, info.line));
-      }
     }
-    this.currentReviewerReviewedLines = [...currentReviewerLines].sort();
+    const requestId = ++this.lineReviewHistoryRequestId;
+    const path = this.path;
+    const patchNum = this.patchNum;
+    const historyEntries =
+      await getAppContext().restApiService.getReviewedLineHistory(this.changeNum);
+    if (requestId !== this.lineReviewHistoryRequestId) return;
+
+    this.reviewerReviewedLineKeys = this.buildReviewerReviewedLineKeys(
+      historyEntries ?? [],
+      path,
+      patchNum
+    );
+    this.syncCurrentReviewerReviewedLines(path);
   }
 
   private isTooLargeForDownload() {

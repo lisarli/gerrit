@@ -112,6 +112,7 @@ import {
 } from '../../types/diff';
 import {
   GetDiffCommentsOutput,
+  LineReviewHistoryInfo,
   LineReviewedInfo,
   LineReviewedInput,
   RestApiService,
@@ -2310,6 +2311,16 @@ export class GrRestApiServiceImpl implements RestApiService, Finalizable {
       url: `${url}/files/${encodeURIComponent(path)}/reviewed_lines`,
       anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed_lines`,
     }) as Promise<LineReviewedInfo[] | undefined>;
+  }
+
+  async getReviewedLineHistory(
+    changeNum: NumericChangeId
+  ): Promise<LineReviewHistoryInfo[] | undefined> {
+    const url = await this._changeBaseURL(changeNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/reviewed_line_history`,
+      anonymizedUrl: `${ANONYMIZED_CHANGE_BASE_URL}/reviewed_line_history`,
+    }) as Promise<LineReviewHistoryInfo[] | undefined>;
   }
 
   async saveReviewedLine(

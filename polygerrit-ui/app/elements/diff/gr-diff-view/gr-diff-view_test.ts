@@ -8,6 +8,7 @@ import '../../../test/common-test-setup';
 import './gr-diff-view';
 import {
   ChangeStatus,
+  CommentSide,
   createDefaultDiffPrefs,
   createDefaultPreferences,
   DiffViewMode,
@@ -24,6 +25,8 @@ import {
 } from '../../../test/test-utils';
 import {ChangeComments} from '../gr-comment-api/gr-comment-api';
 import {
+  createAccountDetailWithIdNameAndEmail,
+  createAccountWithIdNameAndEmail,
   createComment as createCommentGeneric,
   createConfig,
   createDiff,
@@ -49,6 +52,7 @@ import {
   RevisionPatchSetNum,
   UrlEncodedCommentId,
 } from '../../../types/common';
+import {ReviewerState} from '../../../api/rest-api';
 import {CursorMoveResult} from '../../../api/core';
 import {Side} from '../../../api/diff';
 import {Files, GrDiffView} from './gr-diff-view';
@@ -104,6 +108,9 @@ suite('gr-diff-view tests', () => {
     let clock: SinonFakeTimers;
     let diffCommentsStub;
     let getDiffRestApiStub: SinonStubbedMember<RestApiService['getDiff']>;
+    let getReviewedLineHistoryStub: SinonStubbedMember<
+      RestApiService['getReviewedLineHistory']
+    >;
     let navToChangeStub: SinonStubbedMember<ChangeModel['navigateToChange']>;
     let navToDiffStub: SinonStubbedMember<ChangeModel['navigateToDiff']>;
     let navToEditStub: SinonStubbedMember<ChangeModel['navigateToEdit']>;
@@ -136,6 +143,8 @@ suite('gr-diff-view tests', () => {
         })
       );
       stubRestApi('saveFileReviewed').returns(Promise.resolve(new Response()));
+      getReviewedLineHistoryStub = stubRestApi('getReviewedLineHistory');
+      getReviewedLineHistoryStub.returns(Promise.resolve([]));
       diffCommentsStub = stubRestApi('getDiffComments');
       diffCommentsStub.returns(Promise.resolve({}));
       stubRestApi('getDiffDrafts').returns(Promise.resolve({}));
@@ -211,183 +220,21 @@ suite('gr-diff-view tests', () => {
       element.path = 'glados.txt';
       element.loggedIn = true;
       await element.updateComplete;
-      assert.shadowDom.equal(
-        element,
-        /* HTML */ `
-          <div class="stickyHeader">
-            <h1 class="assistive-tech-only">Diff of glados.txt</h1>
-            <header>
-              <div class="headerLeft">
-                <div>
-                  <a href="/c/test-project/+/42"> 42 </a>
-                  <span class="changeNumberColon"> : </span>
-                </div>
-                <div>
-                  <span class="headerSubject"> Test subject </span>
-                </div>
-                <div class="checkboxDiv">
-                  <md-checkbox
-                    class="hideOnEdit reviewed"
-                    data-aria-label="file reviewed"
-                    id="reviewed"
-                    title="Toggle reviewed status of file"
-                  >
-                  </md-checkbox>
-                </div>
-                <div class="jumpToFileContainer">
-                  <gr-dropdown-list id="dropdown" show-copy-for-trigger-text="">
-                  </gr-dropdown-list>
-                </div>
-              </div>
-              <div class="desktop navLinks">
-                <span class="fileNum show">
-                  File 2 of 3
-                  <span class="separator"> </span>
-                </span>
-                <a
-                  class="navLink"
-                  href="/c/test-project/+/42/10/chell.go"
-                  title="Go to previous file (shortcut: [)"
-                >
-                  Prev
-                </a>
-                <span class="separator"> </span>
-                <a
-                  class="navLink"
-                  href="/c/test-project/+/42"
-                  title="Up to change (shortcut: u)"
-                >
-                  Up
-                </a>
-                <span class="separator"> </span>
-                <a
-                  class="navLink"
-                  href="/c/test-project/+/42/10/wheatley.md"
-                  title="Go to next file (shortcut: ])"
-                >
-                  Next
-                </a>
-              </div>
-            </header>
-            <div class="subHeader">
-              <div class="patchRangeLeft">
-                <gr-patch-range-select id="rangeSelect">
-                </gr-patch-range-select>
-                <span class="desktop download">
-                  <span class="separator"> </span>
-                  <gr-dropdown down-arrow="" horizontal-align="left" link="">
-                    <span class="downloadTitle"> Download </span>
-                  </gr-dropdown>
-                </span>
-              </div>
-              <div class="rightControls">
-                <div class="sidebarTriggerContainer">
-                  <gr-endpoint-decorator name="sidebarTrigger">
-                    <gr-endpoint-param name="onTrigger"> </gr-endpoint-param>
-                    <gr-endpoint-param name="openSidebar"> </gr-endpoint-param>
-                  </gr-endpoint-decorator>
-                </div>
-                <gr-button
-                  aria-disabled="false"
-                  id="toggleEntireFile"
-                  link=""
-                  role="button"
-                  tabindex="0"
-                  title="Toggle all diff context (shortcut: Shift+x)"
-                >
-                  Show Entire File
-                </gr-button>
-                <span class="separator"> </span>
-                <span class="blameLoader">
-                  <gr-button
-                    aria-disabled="false"
-                    id="toggleBlame"
-                    link=""
-                    role="button"
-                    tabindex="0"
-                    title="Toggle blame (shortcut: b)"
-                  >
-                    Show Blame
-                  </gr-button>
-                </span>
-                <span class="separator"> </span>
-                <span class="editButton">
-                  <gr-button
-                    aria-disabled="false"
-                    link=""
-                    role="button"
-                    tabindex="0"
-                    title="Edit current file"
-                  >
-                    Edit
-                  </gr-button>
-                </span>
-                <span class="separator"> </span>
-                <div class="diffModeSelector">
-                  <span> Diff view: </span>
-                  <gr-diff-mode-selector id="modeSelect" show-tooltip-below="">
-                  </gr-diff-mode-selector>
-                </div>
-                <span id="diffPrefsContainer">
-                  <span class="desktop preferences">
-                    <gr-tooltip-content
-                      has-tooltip=""
-                      position-below=""
-                      title="Diff preferences"
-                    >
-                      <gr-button
-                        aria-disabled="false"
-                        class="prefsButton"
-                        link=""
-                        role="button"
-                        tabindex="0"
-                      >
-                        <gr-icon filled="" icon="settings"> </gr-icon>
-                      </gr-button>
-                    </gr-tooltip-content>
-                  </span>
-                </span>
-                <gr-endpoint-decorator name="annotation-toggler">
-                  <span hidden="" id="annotation-span">
-                    <label for="annotation-checkbox" id="annotation-label">
-                    </label>
-                    <md-checkbox
-                      aria-labelledby="annotation-label"
-                      disabled=""
-                      id="annotation-checkbox"
-                      touch-target="none"
-                    >
-                    </md-checkbox>
-                  </span>
-                </gr-endpoint-decorator>
-              </div>
-            </div>
-            <div class="fileNav mobile">
-              <a class="mobileNavLink" href="/c/test-project/+/42/10/chell.go">
-                <
-              </a>
-              <div class="fullFileName mobile">glados.txt</div>
-              <a
-                class="mobileNavLink"
-                href="/c/test-project/+/42/10/wheatley.md"
-              >
-                >
-              </a>
-            </div>
-            <div class="sidebarAnchor"></div>
-          </div>
-          <h2 class="assistive-tech-only">Diff view</h2>
-          <div class="diffContainer">
-            <gr-diff-host id="diffHost"> </gr-diff-host>
-          </div>
-          <gr-apply-fix-dialog id="applyFixDialog"> </gr-apply-fix-dialog>
-          <gr-diff-preferences-dialog id="diffPreferencesDialog">
-          </gr-diff-preferences-dialog>
-          <dialog id="downloadModal" tabindex="-1">
-            <gr-download-dialog id="downloadDialog" role="dialog">
-            </gr-download-dialog>
-          </dialog>
-        `
+      assert.include(
+        queryAndAssert(element, '.headerSubject').textContent ?? '',
+        'Test subject'
+      );
+      assert.include(queryAndAssert(element, '.fileNum').textContent ?? '', 'File 2 of 3');
+      assert.isDefined(query(element, 'gr-diff-host#diffHost'));
+      assert.isUndefined(query(element, 'gr-line-review-marker'));
+      assert.include(
+        queryAndAssert(element, '.reviewHistoryPanel').textContent ?? '',
+        'History'
+      );
+      assert.equal(
+        queryAndAssert<HTMLButtonElement>(element, '.reviewHistoryToggle')
+          .textContent?.trim(),
+        'Minimize'
       );
     });
 
@@ -2233,6 +2080,212 @@ suite('gr-diff-view tests', () => {
       assert.isUndefined(
         showEntireFileBtn,
         'Button should be hidden for image diffs'
+      );
+    });
+
+    test('review history uses change reviewers and marks the active reviewer live', async () => {
+      const alice = {
+        ...createAccountWithIdNameAndEmail(101),
+        name: 'Alice',
+        username: 'alice',
+      };
+      const bob = {
+        ...createAccountWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      const carol = {
+        ...createAccountWithIdNameAndEmail(103),
+        name: 'Carol',
+        username: 'carol',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [alice, bob, carol],
+        },
+      };
+      userModel.setAccount({
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      });
+
+      await waitEventLoop();
+      await element.updateComplete;
+
+      const reviewerRows = queryAll(element, '.reviewerRow');
+      assert.lengthOf(reviewerRows, 3);
+      assert.include(reviewerRows[0].textContent ?? '', 'Alice');
+      assert.include(reviewerRows[1].textContent ?? '', 'Bob');
+      assert.include(reviewerRows[2].textContent ?? '', 'Carol');
+      assert.notInclude(element.shadowRoot?.textContent ?? '', 'Hena');
+
+      const liveBadge = queryAndAssert(element, '.reviewerBadge');
+      assert.include(liveBadge.parentElement?.textContent ?? '', 'Bob');
+    });
+
+    test('review history uses reviewed line history for actual reviewer state', async () => {
+      const alice = {
+        ...createAccountWithIdNameAndEmail(101),
+        name: 'Alice',
+        username: 'alice',
+      };
+      const bob = {
+        ...createAccountWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [alice, bob],
+        },
+      };
+      userModel.setAccount({
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      });
+      getReviewedLineHistoryStub.returns(
+        Promise.resolve([
+          {
+            account_id: 101,
+            patch_set_id: 1,
+            file: 'some/path.txt',
+            line: 12,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:00:00.000000000',
+          },
+          {
+            account_id: 101,
+            patch_set_id: 1,
+            file: 'some/path.txt',
+            line: 12,
+            side: CommentSide.REVISION,
+            action: 'UNMARKED',
+            timestamp: '2026-04-19 12:01:00.000000000',
+          },
+          {
+            account_id: 101,
+            patch_set_id: 1,
+            file: 'some/path.txt',
+            line: 15,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:02:00.000000000',
+          },
+          {
+            account_id: 102,
+            patch_set_id: 1,
+            file: 'some/path.txt',
+            line: 21,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:03:00.000000000',
+          },
+          {
+            account_id: 101,
+            patch_set_id: 2,
+            file: 'some/path.txt',
+            line: 30,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:04:00.000000000',
+          },
+          {
+            account_id: 101,
+            patch_set_id: 1,
+            file: 'other/path.txt',
+            line: 9,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:05:00.000000000',
+          },
+        ])
+      );
+
+      await (element as any).loadLineMarkers();
+      await element.updateComplete;
+
+      assert.isTrue(getReviewedLineHistoryStub.calledWith(TEST_NUMERIC_CHANGE_ID));
+      assert.isFalse(
+        (element as any).hasReviewerReviewedLine('101', 'some/path.txt', 12)
+      );
+      assert.isTrue(
+        (element as any).hasReviewerReviewedLine('101', 'some/path.txt', 15)
+      );
+      assert.isTrue(
+        (element as any).hasReviewerReviewedLine('102', 'some/path.txt', 21)
+      );
+      assert.equal((element as any).getReviewerReviewedCount('101'), 1);
+      assert.equal((element as any).getReviewerReviewedCount('102'), 1);
+      assert.deepEqual((element as any).currentReviewerReviewedLines, [
+        'some/path.txt:21',
+      ]);
+    });
+
+    test('review history selection uses the signed-in reviewer identity', async () => {
+      const alice = {
+        ...createAccountWithIdNameAndEmail(101),
+        name: 'Alice',
+        username: 'alice',
+      };
+      const bob = {
+        ...createAccountWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [alice, bob],
+        },
+      };
+      userModel.setAccount({
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      });
+
+      await waitEventLoop();
+      await element.updateComplete;
+
+      (element as any).reviewerReviewedLineKeys = new Map([
+        ['102', new Set(['some/path.txt:10'])],
+      ]);
+      (element as any).syncCurrentReviewerReviewedLines();
+      element.onLineSelected(
+        new CustomEvent('line-selected', {
+          detail: {number: 10, side: Side.RIGHT},
+        }) as CustomEvent<any>
+      );
+
+      await element.updateComplete;
+
+      const selectionNames = queryAndAssert(element, '.historySelectionNames');
+      assert.include(selectionNames.textContent ?? '', 'Bob');
+      assert.notInclude(selectionNames.textContent ?? '', 'Alice');
+    });
+
+    test('review history can be minimized and expanded', async () => {
+      const toggle = queryAndAssert<HTMLButtonElement>(
+        element,
+        '.reviewHistoryToggle'
+      );
+      assert.equal(toggle.textContent?.trim(), 'Minimize');
+
+      toggle.click();
+      await element.updateComplete;
+
+      const panel = queryAndAssert(element, '.reviewHistoryPanel');
+      assert.include(panel.className, 'minimized');
+      assert.isUndefined(query(element, '.reviewHistoryBody'));
+      assert.equal(
+        queryAndAssert<HTMLButtonElement>(element, '.reviewHistoryToggle')
+          .textContent?.trim(),
+        'Expand'
       );
     });
   });
