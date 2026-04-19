@@ -238,7 +238,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
@@ -252,7 +252,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).hasSize(2);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
@@ -266,7 +266,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).hasSize(3);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
@@ -275,13 +275,16 @@ public class JdbcAccountPatchLineReviewStoreTest {
   }
 
   @Test
-  public void historyIsolatedByAccount() {
-    var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+  public void historyUnifiedAcrossAccounts() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(2));
 
-    ImmutableList<LineReviewHistoryEntry> historyAccount2 =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_2);
+    ImmutableList<LineReviewHistoryEntry> history = store.findLineReviewHistory(CHANGE_1);
 
-    assertThat(historyAccount2).isEmpty();
+    assertThat(history).hasSize(2);
+    assertThat(history.stream().map(LineReviewHistoryEntry::accountId))
+        .containsExactly(ACCOUNT_1, ACCOUNT_2)
+        .inOrder();
   }
 
   @Test
@@ -291,7 +294,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.clearLineReviewed(PS_1);
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
@@ -306,7 +309,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     assertThat(second).isFalse();
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
@@ -317,7 +320,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(99));
 
     ImmutableList<LineReviewHistoryEntry> history =
-        store.findLineReviewHistory(CHANGE_1, ACCOUNT_1);
+        store.findLineReviewHistory(CHANGE_1);
 
     assertThat(history).isEmpty();
   }

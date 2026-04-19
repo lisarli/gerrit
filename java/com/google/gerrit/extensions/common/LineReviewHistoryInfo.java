@@ -18,8 +18,9 @@ import com.google.gerrit.extensions.client.Comment.Range;
 import com.google.gerrit.extensions.client.Side;
 import java.sql.Timestamp;
 
-/** Represents a single entry in the line review history for a change. */
+/** Represents a single entry in the unified line review history for a change. */
 public class LineReviewHistoryInfo {
+  public Integer accountId;
   public String file;
   public Integer line;
   public Side side;

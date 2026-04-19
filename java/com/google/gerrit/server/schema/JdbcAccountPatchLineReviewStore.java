@@ -581,29 +581,25 @@ public abstract class JdbcAccountPatchLineReviewStore
   }
 
   @Override
-  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(
-      Change.Id changeId, Account.Id accountId) {
+  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
     try (TraceTimer ignored =
             TraceContext.newTimer(
                 "Find line review history",
-                Metadata.builder()
-                    .changeId(changeId.get())
-                    .accountId(accountId.get())
-                    .build());
+                Metadata.builder().changeId(changeId.get()).build());
         Connection con = ds.getConnection();
         PreparedStatement stmt =
             con.prepareStatement(
-                "SELECT patch_set_id, file_name, line_number, side, start_line, start_char, "
-                    + "end_line, end_char, action, created_on "
+                "SELECT account_id, patch_set_id, file_name, line_number, side, start_line, "
+                    + "start_char, end_line, end_char, action, created_on "
                     + "FROM account_patch_line_review_history "
-                    + "WHERE change_id = ? AND account_id = ? "
+                    + "WHERE change_id = ? "
                     + "ORDER BY created_on ASC")) {
       stmt.setInt(1, changeId.get());
-      stmt.setInt(2, accountId.get());
       try (ResultSet rs = stmt.executeQuery()) {
         ImmutableList.Builder<LineReviewHistoryEntry> builder = ImmutableList.builder();
         while (rs.next()) {
           PatchSet.Id psId = PatchSet.id(changeId, rs.getInt("patch_set_id"));
+          Account.Id accountId = Account.id(rs.getInt("account_id"));
           builder.add(
               LineReviewHistoryEntry.create(
                   psId,

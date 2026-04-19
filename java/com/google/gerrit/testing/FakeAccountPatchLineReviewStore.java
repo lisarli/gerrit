@@ -291,13 +291,11 @@ public class FakeAccountPatchLineReviewStore
   }
 
   @Override
-  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(
-      Change.Id changeId, Account.Id accountId) {
+  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
     synchronized (history) {
       ImmutableList.Builder<LineReviewHistoryEntry> builder = ImmutableList.builder();
       for (LineReviewHistoryEntry entry : history) {
-        if (entry.patchSetId().changeId().equals(changeId)
-            && entry.accountId().equals(accountId)) {
+        if (entry.patchSetId().changeId().equals(changeId)) {
           builder.add(entry);
         }
       }

@@ -245,15 +245,13 @@ public interface AccountPatchLineReviewStore {
   }
 
   /**
-   * Returns the full history of mark/unmark actions for the given user on the given change,
+   * Returns the full unified history of mark/unmark actions for the given change across all users,
    * ordered chronologically (oldest first).
    *
    * @param changeId change ID
-   * @param accountId account ID of the user
    * @return list of history entries
    */
-  default ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(
-      Change.Id changeId, Account.Id accountId) {
+  default ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
     throw new NotImplementedException(
         "findLineReviewHistory() is not implemented for this AccountPatchLineReviewStore.");
   }

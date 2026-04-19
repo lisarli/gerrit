@@ -3078,7 +3078,7 @@ public class RevisionIT extends AbstractDaemonTest {
   }
 
   @Test
-  public void getReviewedLineHistory_isolatedByUser() throws Exception {
+  public void getReviewedLineHistory_unifiedAcrossUsers() throws Exception {
     PushOneCommit.Result r = createChange();
     String linesUrl = reviewedLinesUrl(r.getChangeId());
 
@@ -3088,12 +3088,15 @@ public class RevisionIT extends AbstractDaemonTest {
     input.side = Side.REVISION;
     userRestSession.put(linesUrl, input).assertCreated();
 
-    // admin's own history should be empty (admin didn't mark anything)
+    // admin sees the unified history including user's action
     RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
     resp.assertOK();
     List<LineReviewHistoryInfo> history =
         newGson()
             .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
-    assertThat(history).isEmpty();
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(0).line).isEqualTo(7);
+    assertThat(history.get(0).accountId).isEqualTo(user.id().get());
   }
 }

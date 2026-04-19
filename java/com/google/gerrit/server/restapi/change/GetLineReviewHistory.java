@@ -15,7 +15,6 @@
 package com.google.gerrit.server.restapi.change;
 
 import com.google.common.collect.ImmutableList;
-import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.extensions.client.Comment.Range;
 import com.google.gerrit.extensions.common.LineReviewHistoryInfo;
@@ -46,15 +45,15 @@ public class GetLineReviewHistory implements RestReadView<ChangeResource> {
     if (!rsrc.getUser().isIdentifiedUser()) {
       throw new AuthException("Authentication required");
     }
-    Account.Id accountId = rsrc.getUser().asIdentifiedUser().getAccountId();
     Change.Id changeId = rsrc.getChange().getId();
 
     ImmutableList<LineReviewHistoryEntry> entries =
-        accountPatchLineReviewStore.call(s -> s.findLineReviewHistory(changeId, accountId));
+        accountPatchLineReviewStore.call(s -> s.findLineReviewHistory(changeId));
 
     List<LineReviewHistoryInfo> result = new ArrayList<>();
     for (LineReviewHistoryEntry entry : entries) {
       LineReviewHistoryInfo info = new LineReviewHistoryInfo();
+      info.accountId = entry.accountId().get();
       info.file = entry.path();
       info.line = entry.lineNumber();
       info.side = entry.getSide();
