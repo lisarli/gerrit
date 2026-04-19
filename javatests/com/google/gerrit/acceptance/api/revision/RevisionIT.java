@@ -96,10 +96,12 @@ import com.google.gerrit.extensions.common.ChangeInfo;
 import com.google.gerrit.extensions.common.ChangeMessageInfo;
 import com.google.gerrit.extensions.common.CommentInfo;
 import com.google.gerrit.extensions.common.CommitInfo;
+import com.google.gerrit.extensions.common.FileLineReviewProgressInfo;
 import com.google.gerrit.extensions.common.FileInfo;
 import com.google.gerrit.extensions.common.GitPerson;
 import com.google.gerrit.extensions.common.LabelInfo;
 import com.google.gerrit.extensions.common.MergeableInfo;
+import com.google.gerrit.extensions.common.ReviewerLineReviewProgressInfo;
 import com.google.gerrit.extensions.common.RevisionInfo;
 import com.google.gerrit.extensions.common.RevisionInfo.ParentInfo;
 import com.google.gerrit.extensions.common.WebLinkInfo;
@@ -1767,6 +1769,109 @@ public class RevisionIT extends AbstractDaemonTest {
 
   private String reviewedLinesUrl(String changeId) {
     return "/changes/" + changeId + "/revisions/current/files/" + FILE_NAME + "/reviewed_lines";
+  }
+
+  private String fileLineReviewProgressUrl(String changeId, String fileName) {
+    return "/changes/" + changeId + "/revisions/current/files/" + fileName + "/line_review_progress";
+  }
+
+  @Test
+  public void getFileLineReviewProgress_percentagesUseWholeFileLineCount() throws Exception {
+    PushOneCommit.Result r =
+        createChange(SUBJECT, FILE_NAME, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(10);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.account._accountId).isEqualTo(admin.id().get());
+    assertThat(a.percentRead).isWithin(0.001).of(10.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(90.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_separateDenominatorPerFile() throws Exception {
+    String fiveLines = "l1\nl2\nl3\nl4\nl5\n";
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            ImmutableMap.of(FILE_NAME, fiveLines, "b.txt", fiveLines));
+    PushOneCommit.Result r = push.to("refs/for/master");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 2;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse fileA =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    fileA.assertOK();
+    FileLineReviewProgressInfo pa =
+        newGson()
+            .fromJson(fileA.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(pa.totalLinesInFile).isEqualTo(5);
+    assertThat(pa.reviewers).hasSize(1);
+    assertThat(pa.reviewers.get(0).percentRead).isWithin(0.001).of(20.0);
+
+    RestResponse fileB =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), "b.txt"));
+    fileB.assertOK();
+    FileLineReviewProgressInfo pb =
+        newGson()
+            .fromJson(fileB.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(pb.totalLinesInFile).isEqualTo(5);
+    assertThat(pb.reviewers).hasSize(1);
+    assertThat(pb.reviewers.get(0).percentRead).isWithin(0.001).of(0.0);
+    assertThat(pb.reviewers.get(0).percentUnread).isWithin(0.001).of(100.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_tentativelyReadPercent_nonZeroAfterPropagation()
+      throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r1.getChangeId()), input).assertCreated();
+
+    // Two lines inserted at top: former line 5 is now line 7; propagation stores it as tentative.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r2.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(12);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.account._accountId).isEqualTo(admin.id().get());
+    assertThat(a.percentRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(100.0 * 11 / 12);
   }
 
   @Test
