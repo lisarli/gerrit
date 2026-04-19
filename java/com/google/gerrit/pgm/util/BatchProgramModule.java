@@ -25,6 +25,7 @@ import com.google.gerrit.entities.SubmitRequirement;
 import com.google.gerrit.extensions.api.projects.CommentLinkInfo;
 import com.google.gerrit.extensions.common.AccountVisibility;
 import com.google.gerrit.extensions.config.FactoryModule;
+import com.google.gerrit.extensions.registration.DynamicItem;
 import com.google.gerrit.extensions.registration.DynamicMap;
 import com.google.gerrit.extensions.registration.DynamicSet;
 import com.google.gerrit.extensions.restapi.RestView;
@@ -47,6 +48,7 @@ import com.google.gerrit.server.cache.CacheRemovalListener;
 import com.google.gerrit.server.cache.h2.CacheOptions;
 import com.google.gerrit.server.cache.h2.H2CacheModule;
 import com.google.gerrit.server.cache.mem.DefaultMemoryCacheModule;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.ChangeJson;
 import com.google.gerrit.server.change.ChangeKindCacheImpl;
 import com.google.gerrit.server.change.EmailNewPatchSet;
@@ -149,6 +151,8 @@ public class BatchProgramModule extends FactoryModule {
     // We're just running through each change
     // once, so don't worry about cache removal.
     bind(new TypeLiteral<DynamicSet<CacheRemovalListener>>() {}).toInstance(DynamicSet.emptySet());
+    // Required by PatchSetInserter -> LineReviewPropagation -> PluginItemContext during reindex.
+    DynamicItem.itemOf(binder(), AccountPatchLineReviewStore.class);
     DynamicMap.mapOf(binder(), new TypeLiteral<Cache<?, ?>>() {});
     bind(new TypeLiteral<List<CommentLinkInfo>>() {})
         .toProvider(CommentLinkProvider.class)
