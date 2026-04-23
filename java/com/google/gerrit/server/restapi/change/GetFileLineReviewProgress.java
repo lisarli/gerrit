@@ -77,17 +77,16 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
 
     AccountLoader loader = accountLoaderFactory.create(true);
     List<ReviewerLineReviewProgressInfo> reviewers = new ArrayList<>();
-    ImmutableList.Builder<AccountPatchLineReviewStore.ReviewedLine> allReviewerLines =
-        ImmutableList.builder();
+    ImmutableList.Builder<FileLineReviewProgressComputer.Counts> reviewerCounts = ImmutableList.builder();
     for (Account.Id accountId : sorted) {
       Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> opt =
           accountPatchLineReviewStore.call(s -> s.findReviewedLines(psId, accountId, path));
       ImmutableList<AccountPatchLineReviewStore.ReviewedLine> lines =
           opt.map(AccountPatchLineReviewStore.PatchSetWithReviewedLines::lines)
               .orElseGet(ImmutableList::of);
-      allReviewerLines.addAll(lines);
       FileLineReviewProgressComputer.Counts counts =
           FileLineReviewProgressComputer.compute(lines, totalLines);
+      reviewerCounts.add(counts);
 
       ReviewerLineReviewProgressInfo info = new ReviewerLineReviewProgressInfo();
       info.account = loader.get(accountId);
@@ -96,14 +95,32 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
     }
     loader.fill();
 
-    FileLineReviewProgressComputer.Counts overallCounts =
-        FileLineReviewProgressComputer.compute(allReviewerLines.build(), totalLines);
+    OverallCounts overallCounts = computeOverallCounts(reviewerCounts.build(), totalLines);
 
     FileLineReviewProgressInfo out = new FileLineReviewProgressInfo();
     out.totalLinesInFile = totalLines;
     fillPercents(out, overallCounts, totalLines);
     out.reviewers = reviewers;
     return Response.ok(out);
+  }
+
+  private static OverallCounts computeOverallCounts(
+      ImmutableList<FileLineReviewProgressComputer.Counts> reviewerCounts, int totalLinesInFile) {
+    if (totalLinesInFile <= 0) {
+      return new OverallCounts(0, 0, 0);
+    }
+    if (reviewerCounts.isEmpty()) {
+      return new OverallCounts(0, 0, totalLinesInFile);
+    }
+
+    int readLines = totalLinesInFile;
+    int unreadLines = 0;
+    for (FileLineReviewProgressComputer.Counts counts : reviewerCounts) {
+      readLines = Math.min(readLines, counts.readLines);
+      unreadLines = Math.max(unreadLines, counts.unreadLines);
+    }
+    int tentativelyReadLines = totalLinesInFile - readLines - unreadLines;
+    return new OverallCounts(readLines, Math.max(0, tentativelyReadLines), unreadLines);
   }
 
   private static void fillPercents(
@@ -123,7 +140,7 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
 
   private static void fillPercents(
       FileLineReviewProgressInfo info,
-      FileLineReviewProgressComputer.Counts counts,
+      OverallCounts counts,
       int totalLinesInFile) {
     if (totalLinesInFile <= 0) {
       info.percentRead = null;
@@ -134,5 +151,17 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
     info.percentRead = 100.0 * counts.readLines / totalLinesInFile;
     info.percentTentativelyRead = 100.0 * counts.tentativelyReadLines / totalLinesInFile;
     info.percentUnread = 100.0 * counts.unreadLines / totalLinesInFile;
+  }
+
+  private static class OverallCounts {
+    final int readLines;
+    final int tentativelyReadLines;
+    final int unreadLines;
+
+    OverallCounts(int readLines, int tentativelyReadLines, int unreadLines) {
+      this.readLines = readLines;
+      this.tentativelyReadLines = tentativelyReadLines;
+      this.unreadLines = unreadLines;
+    }
   }
 }
