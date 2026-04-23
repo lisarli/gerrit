@@ -19,6 +19,10 @@ import java.util.List;
 /**
  * Per-file line review progress: whole-file line count as the denominator, and one entry per
  * reviewer who has stored line-review data on this patch set.
+ *
+ * <p>Overall fields ({@link #percentRead}, {@link #percentTentativelyRead}, {@link #percentUnread})
+ * are computed from merged line markers across reviewers (any-reviewer coverage), not from
+ * averaging the per-reviewer percentages.
  */
 public class FileLineReviewProgressInfo {
   /** Total lines in the file at this revision (denominator for the percentages below). */
@@ -33,8 +37,9 @@ public class FileLineReviewProgressInfo {
    */
   public Double percentTentativelyRead;
 
-  /** Overall percent of file lines not marked READ/TENTATIVELY_READ. */
+  /** Overall percent of file lines with no READ/TENTATIVELY_READ marker from any reviewer. */
   public Double percentUnread;
 
+  /** Per-reviewer progress for each account that has stored line-review markers on this patch set. */
   public List<ReviewerLineReviewProgressInfo> reviewers;
 }

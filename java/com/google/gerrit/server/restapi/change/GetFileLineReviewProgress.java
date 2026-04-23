@@ -42,7 +42,8 @@ import java.util.Optional;
  *
  * <p>Whole-file line count is the denominator. The response includes overall file progress across
  * all reviewers plus per-reviewer percentages for each account with line-review rows on this patch
- * set.
+ * set. Overall values use any-reviewer coverage: if any reviewer marks a line READ, that line
+ * contributes to overall READ.
  */
 @Singleton
 public class GetFileLineReviewProgress implements RestReadView<FileResource> {
@@ -77,6 +78,7 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
 
     AccountLoader loader = accountLoaderFactory.create(true);
     List<ReviewerLineReviewProgressInfo> reviewers = new ArrayList<>();
+    // Build one merged line-marker list so overall progress reflects coverage by any reviewer.
     ImmutableList.Builder<AccountPatchLineReviewStore.ReviewedLine> allReviewedLines =
         ImmutableList.builder();
     for (Account.Id accountId : sorted) {
@@ -87,6 +89,7 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
               .orElseGet(ImmutableList::of);
       FileLineReviewProgressComputer.Counts counts =
           FileLineReviewProgressComputer.compute(lines, totalLines);
+      // Preserve all raw markers; the computer handles side filtering, overlaps and deduplication.
       allReviewedLines.addAll(lines);
 
       ReviewerLineReviewProgressInfo info = new ReviewerLineReviewProgressInfo();
@@ -110,6 +113,7 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
       ReviewerLineReviewProgressInfo info,
       FileLineReviewProgressComputer.Counts counts,
       int totalLinesInFile) {
+    // Keep percentages null when denominator is undefined/empty.
     if (totalLinesInFile <= 0) {
       info.percentRead = null;
       info.percentTentativelyRead = null;
@@ -125,6 +129,7 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
       FileLineReviewProgressInfo info,
       FileLineReviewProgressComputer.Counts counts,
       int totalLinesInFile) {
+    // Keep percentages null when denominator is undefined/empty.
     if (totalLinesInFile <= 0) {
       info.percentRead = null;
       info.percentTentativelyRead = null;

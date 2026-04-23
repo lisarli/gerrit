@@ -169,6 +169,9 @@ public interface AccountPatchLineReviewStore {
   /**
    * Accounts that have at least one line review row stored for the given patch set.
    *
+   * <p>Used by {@code /line_review_progress} to enumerate reviewers that contribute per-reviewer
+   * and overall file progress.
+   *
    * @param psId patch set ID
    */
   default ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
