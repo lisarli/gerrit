@@ -1802,6 +1802,51 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(a.percentRead).isWithin(0.001).of(10.0);
     assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
     assertThat(a.percentUnread).isWithin(0.001).of(90.0);
+    assertThat(progress.percentRead).isWithin(0.001).of(10.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(90.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_overallProgressUsesAnyReviewerCoverage()
+      throws Exception {
+    PushOneCommit.Result r =
+        createChange(SUBJECT, FILE_NAME, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 2;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), adminInput).assertCreated();
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 9;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r.getChangeId()), userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(10);
+    assertThat(progress.percentRead).isWithin(0.001).of(20.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(80.0);
+    assertThat(progress.reviewers).hasSize(2);
+
+    Double adminRead = null;
+    Double userRead = null;
+    for (ReviewerLineReviewProgressInfo reviewer : progress.reviewers) {
+      if (reviewer.account._accountId == admin.id().get()) {
+        adminRead = reviewer.percentRead;
+      } else if (reviewer.account._accountId == user.id().get()) {
+        userRead = reviewer.percentRead;
+      }
+    }
+    assertThat(adminRead).isWithin(0.001).of(10.0);
+    assertThat(userRead).isWithin(0.001).of(10.0);
   }
 
   @Test
@@ -1902,6 +1947,34 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(a.percentRead).isWithin(0.001).of(100.0);
     assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
     assertThat(a.percentUnread).isWithin(0.001).of(0.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_is100WhenAnyReviewerCoverageIsComplete() throws Exception {
+    PushOneCommit.Result r = createChange(SUBJECT, FILE_NAME, "r1\nr2\nr3\n");
+    String url = reviewedLinesUrl(r.getChangeId());
+    for (int line = 1; line <= 3; line++) {
+      LineReviewedInput input = new LineReviewedInput();
+      input.line = line;
+      input.side = Side.REVISION;
+      adminRestSession.put(url, input).assertCreated();
+    }
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 1;
+    userInput.side = Side.REVISION;
+    userRestSession.put(url, userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+
+    assertThat(progress.percentRead).isWithin(0.001).of(100.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(0.0);
   }
 
   @Test
