@@ -24,5 +24,17 @@ public class FileLineReviewProgressInfo {
   /** Total lines in the file at this revision (denominator for the percentages below). */
   public Integer totalLinesInFile;
 
+  /** Overall percent of file lines marked READ by any reviewer. */
+  public Double percentRead;
+
+  /**
+   * Overall percent of file lines marked TENTATIVELY_READ by any reviewer, excluding lines already
+   * marked READ by any reviewer.
+   */
+  public Double percentTentativelyRead;
+
+  /** Overall percent of file lines not marked READ/TENTATIVELY_READ by any reviewer. */
+  public Double percentUnread;
+
   public List<ReviewerLineReviewProgressInfo> reviewers;
 }

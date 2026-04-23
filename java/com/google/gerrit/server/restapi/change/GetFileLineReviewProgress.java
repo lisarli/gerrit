@@ -40,9 +40,9 @@ import java.util.Optional;
 /**
  * GET {@code /changes/{id}/revisions/{rev}/files/{file}/line_review_progress}
  *
- * <p>Whole-file line count is the denominator; each reviewer with line-review rows on this patch
- * set gets {@code percentRead}, {@code percentTentativelyRead}, and {@code percentUnread} for this
- * file.
+ * <p>Whole-file line count is the denominator. The response includes overall file progress across
+ * all reviewers plus per-reviewer percentages for each account with line-review rows on this patch
+ * set.
  */
 @Singleton
 public class GetFileLineReviewProgress implements RestReadView<FileResource> {
@@ -77,12 +77,15 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
 
     AccountLoader loader = accountLoaderFactory.create(true);
     List<ReviewerLineReviewProgressInfo> reviewers = new ArrayList<>();
+    ImmutableList.Builder<AccountPatchLineReviewStore.ReviewedLine> allReviewerLines =
+        ImmutableList.builder();
     for (Account.Id accountId : sorted) {
       Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> opt =
           accountPatchLineReviewStore.call(s -> s.findReviewedLines(psId, accountId, path));
       ImmutableList<AccountPatchLineReviewStore.ReviewedLine> lines =
           opt.map(AccountPatchLineReviewStore.PatchSetWithReviewedLines::lines)
               .orElseGet(ImmutableList::of);
+      allReviewerLines.addAll(lines);
       FileLineReviewProgressComputer.Counts counts =
           FileLineReviewProgressComputer.compute(lines, totalLines);
 
@@ -93,14 +96,33 @@ public class GetFileLineReviewProgress implements RestReadView<FileResource> {
     }
     loader.fill();
 
+    FileLineReviewProgressComputer.Counts overallCounts =
+        FileLineReviewProgressComputer.compute(allReviewerLines.build(), totalLines);
+
     FileLineReviewProgressInfo out = new FileLineReviewProgressInfo();
     out.totalLinesInFile = totalLines;
+    fillPercents(out, overallCounts, totalLines);
     out.reviewers = reviewers;
     return Response.ok(out);
   }
 
   private static void fillPercents(
       ReviewerLineReviewProgressInfo info,
+      FileLineReviewProgressComputer.Counts counts,
+      int totalLinesInFile) {
+    if (totalLinesInFile <= 0) {
+      info.percentRead = null;
+      info.percentTentativelyRead = null;
+      info.percentUnread = null;
+      return;
+    }
+    info.percentRead = 100.0 * counts.readLines / totalLinesInFile;
+    info.percentTentativelyRead = 100.0 * counts.tentativelyReadLines / totalLinesInFile;
+    info.percentUnread = 100.0 * counts.unreadLines / totalLinesInFile;
+  }
+
+  private static void fillPercents(
+      FileLineReviewProgressInfo info,
       FileLineReviewProgressComputer.Counts counts,
       int totalLinesInFile) {
     if (totalLinesInFile <= 0) {
