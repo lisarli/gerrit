@@ -1978,6 +1978,60 @@ public class RevisionIT extends AbstractDaemonTest {
   }
 
   @Test
+  public void getFileLineReviewProgress_overallReadWinsOverTentativeAcrossReviewers()
+      throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 5;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r1.getChangeId()), adminInput).assertCreated();
+
+    // Propagation carries admin's marker forward as tentative at line 7.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 7;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r2.getChangeId()), userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r2.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+
+    assertThat(progress.totalLinesInFile).isEqualTo(12);
+    assertThat(progress.reviewers).hasSize(2);
+    // Overall uses any-reviewer coverage with READ precedence over tentative on the same line.
+    assertThat(progress.percentRead).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(100.0 * 11 / 12);
+
+    Double adminTentative = null;
+    Double userRead = null;
+    for (ReviewerLineReviewProgressInfo reviewer : progress.reviewers) {
+      if (reviewer.account._accountId == admin.id().get()) {
+        adminTentative = reviewer.percentTentativelyRead;
+      } else if (reviewer.account._accountId == user.id().get()) {
+        userRead = reviewer.percentRead;
+      }
+    }
+    assertThat(adminTentative).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(userRead).isWithin(0.001).of(100.0 / 12.0);
+  }
+
+  @Test
   public void getFileLineReviewProgress_unreviewedFile_percentReadIsZero() throws Exception {
     String fiveLines = "l1\nl2\nl3\nl4\nl5\n";
     PushOneCommit push =
