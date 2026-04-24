@@ -25,6 +25,13 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for MySQL.
+ *
+ * <p>Uses a shorter {@code file_name VARCHAR(255)} in {@link #doCreateTable} than the base class so
+ * the composite primary key stays within MySQL index size limits. Duplicate inserts are detected
+ * via vendor {@link SQLException#getErrorCode()} (e.g. 1062) in {@link #convertError}.
+ */
 @Singleton
 public class MysqlAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
@@ -51,6 +58,12 @@ public class MysqlAccountPatchLineReviewStore extends JdbcAccountPatchLineReview
     }
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>{@code file_name} is {@code VARCHAR(255)} so the full composite primary key fits within
+   * InnoDB index byte limits (for example with {@code utf8mb4}); other columns match the base DDL.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(

@@ -57,6 +57,25 @@ import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * JDBC persistence for per-account line/region review markers on a patch set.
+ *
+ * <p>Table {@code account_patch_line_reviews} backs the {@code reviewed_lines} REST API and
+ * derived summaries such as {@code line_review_progress}. Each row is one reviewed region
+ * identified by change, patch set, account, file path, side, and full line/char geometry (the
+ * composite primary key).
+ *
+ * <p>Columns {@code review_status} and {@code tentative_carryover} distinguish explicit {@code
+ * READ} marks from rows created when {@link com.google.gerrit.server.change.LineReviewPropagation}
+ * carries markers forward as {@code TENTATIVELY_READ}. Clearing a carried-over {@code READ} can
+ * downgrade back to tentative instead of deleting the row.
+ *
+ * <p>Configuration: JDBC URL is read from {@code accountPatchLineReviewDb.url}, or the legacy
+ * {@code accountPatchReviewDb.url}. If unset, the site defaults to an on-disk H2 database under
+ * {@code SitePaths}. Subclasses ({@link H2AccountPatchLineReviewStore}, {@link
+ * PostgresqlAccountPatchLineReviewStore}, etc.) differ mainly in {@link #convertError} and
+ * sometimes {@link #doCreateTable} (e.g. shorter {@code file_name} for MySQL/MariaDB key limits).
+ */
 public abstract class JdbcAccountPatchLineReviewStore
     implements AccountPatchLineReviewStore, LifecycleListener {
   private static final FluentLogger logger = FluentLogger.forEnclosingClass();
@@ -73,6 +92,11 @@ public abstract class JdbcAccountPatchLineReviewStore
   private static final String CLOUDSPANNER = "cloudspanner";
   private static final String URL = "url";
 
+  /**
+   * Guice module that binds {@link AccountPatchLineReviewStore} to the JDBC implementation chosen
+   * from {@code accountPatchLineReviewDb.url} or legacy {@code accountPatchReviewDb.url} (driver
+   * family inferred from URL substrings such as {@code postgresql}, {@code mysql}).
+   */
   public static class JdbcAccountPatchLineReviewStoreModule extends LifecycleModule {
     private final Config cfg;
 
@@ -195,7 +219,10 @@ public abstract class JdbcAccountPatchLineReviewStore
     return side == Side.PARENT ? (short) 0 : (short) 1;
   }
 
-  /** Normalize input to (lineNumber, startLine, startChar, endLine, endChar). */
+  /**
+   * Fills {@code lineNumber} and range arrays from REST input: uses {@code line} when present, or
+   * derives a single-line range from {@code range} when valid; otherwise defaults to line 1.
+   */
   protected static void normalizeInput(
       LineReviewedInput input,
       int[] lineNumber,
@@ -233,10 +260,12 @@ public abstract class JdbcAccountPatchLineReviewStore
     }
   }
 
+  /** Returns a connection from the store's pool (used by tests and maintenance). */
   public Connection getConnection() throws SQLException {
     return ds.getConnection();
   }
 
+  /** Creates {@code account_patch_line_reviews} if missing, then runs {@link #upgradeSchema}. */
   public void createTableIfNotExists() {
     try (Connection con = ds.getConnection()) {
       try (Statement stmt = con.createStatement()) {
@@ -249,10 +278,15 @@ public abstract class JdbcAccountPatchLineReviewStore
   }
 
   /**
-   * Adds {@code review_status} and {@code tentative_carryover} for databases without these new columns.
+   * Adds {@code review_status} and {@code tentative_carryover} when upgrading sites that created
+   * {@code account_patch_line_reviews} before those columns existed.
+   *
+   * <p>{@code review_status} stores {@link ReviewStatus} DB values; {@code tentative_carryover}
+   * marks rows inserted by propagation so "clear reviewed" can revert READ to tentative instead of
+   * losing the carried hint entirely.
    */
   protected void upgradeSchema(Connection con) throws SQLException {
-    // see what columns there are and add the two columns if not present already
+    // Introspect current table shape; ALTER only missing columns so this is safe across dialects.
     try (Statement checkStmt = con.createStatement();
         ResultSet rs = checkStmt.executeQuery("SELECT * FROM account_patch_line_reviews WHERE 1=0")) {
       ResultSetMetaData md = rs.getMetaData();
@@ -275,6 +309,10 @@ public abstract class JdbcAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Default DDL for H2/PostgreSQL-style limits. MySQL/MariaDB override with a shorter {@code
+   * file_name} so the composite primary key fits engine index limits.
+   */
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(
         "CREATE TABLE IF NOT EXISTS account_patch_line_reviews ("
@@ -318,7 +356,8 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .build());
         Connection con = ds.getConnection()) {
       boolean prevAutoCommit = con.getAutoCommit();
-      con.setAutoCommit(false); // transaction to ensure atomicity
+      // Select-then-insert/update must be atomic so concurrent reviewers do not double-insert.
+      con.setAutoCommit(false);
       try {
         boolean updated =
             markLineReviewedInTransaction(
@@ -372,7 +411,7 @@ public abstract class JdbcAccountPatchLineReviewStore
           sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
       try (ResultSet rs = sel.executeQuery()) {
         if (!rs.next()) {
-          // no row found, insert a new one
+          // No row for this geometry: insert explicit READ (not carryover).
           try (PreparedStatement ins =
               con.prepareStatement(
                   "INSERT INTO account_patch_line_reviews "
@@ -410,7 +449,7 @@ public abstract class JdbcAccountPatchLineReviewStore
     }
   }
 
-  // fill in the placeholders in the query
+  /** Binds the composite line identity (account, change, patch set, path, geometry) from {@code startIdx}. */
   private static void bindLineGeometry(
       PreparedStatement stmt,
       int startIdx,
@@ -470,6 +509,7 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .build());
         Connection con = ds.getConnection()) {
       boolean prevAutoCommit = con.getAutoCommit();
+      // Select-then-update/delete must be atomic for correct carryover downgrade vs delete.
       con.setAutoCommit(false);
       try {
         clearLineReviewedInTransaction(
@@ -627,6 +667,11 @@ public abstract class JdbcAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Inserts propagated tentative rows one-by-one, skipping geometries that already exist (so
+   * re-running propagation or overlapping sources does not violate the primary key). Callers
+   * should pass mapped {@link ReviewedLine} rows; this method sets status and carryover flags.
+   */
   @Override
   public void insertPropagatedTentativeReviews(
       PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
@@ -748,6 +793,12 @@ public abstract class JdbcAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Maps JDBC failures to Gerrit storage exceptions. This default always wraps as {@link
+   * StorageException}; dialect subclasses map unique-violation codes (for example PostgreSQL
+   * {@code SQLSTATE 23505}) to {@link DuplicateKeyException} so concurrent propagation inserts can
+   * be treated as idempotent skips.
+   */
   public StorageException convertError(String op, SQLException err) {
     if (err.getCause() == null && err.getNextException() != null) {
       err.initCause(err.getNextException());
@@ -755,6 +806,7 @@ public abstract class JdbcAccountPatchLineReviewStore
     return new StorageException(op + " failure on account_patch_line_reviews", err);
   }
 
+  /** Parses {@link SQLException#getSQLState()} from this exception or its chain for dialect switches. */
   protected static int getSQLStateInt(SQLException err) {
     String s = getSQLState(err);
     if (s != null) {

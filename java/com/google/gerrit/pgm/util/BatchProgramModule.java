@@ -151,7 +151,8 @@ public class BatchProgramModule extends FactoryModule {
     // We're just running through each change
     // once, so don't worry about cache removal.
     bind(new TypeLiteral<DynamicSet<CacheRemovalListener>>() {}).toInstance(DynamicSet.emptySet());
-    // Required by PatchSetInserter -> LineReviewPropagation -> PluginItemContext during reindex.
+    // Required by PatchSetInserter/ReplaceOp -> LineReviewPropagation -> PluginItemContext during
+    // reindex; propagation is a no-op if no AccountPatchLineReviewStore implementation is bound.
     DynamicItem.itemOf(binder(), AccountPatchLineReviewStore.class);
     DynamicMap.mapOf(binder(), new TypeLiteral<Cache<?, ?>>() {});
     bind(new TypeLiteral<List<CommentLinkInfo>>() {})

@@ -450,6 +450,9 @@ public class PatchSetInserter implements BatchUpdateOp {
     }
 
     if (priorPatchSet != null) {
+      // Carry forward line/region review markers that still map into the new patch set.
+      // These rows are inserted as TENTATIVELY_READ to represent unmodified carryover, not an
+      // explicit review action on this patch set.
       lineReviewPropagation.propagateOnNewPatchSet(change, priorPatchSet, patchSet);
     }
   }

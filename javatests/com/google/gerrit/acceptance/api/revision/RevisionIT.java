@@ -1757,6 +1757,8 @@ public class RevisionIT extends AbstractDaemonTest {
     Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
         accountPatchLineReviewStore.findReviewedLines(
             r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    // Carryover is intentionally tentative: unchanged/mapped regions are pre-marked for reviewer
+    // convenience, but still distinguishable from explicit READ in this patch set.
     assertThat(found).isPresent();
     assertThat(found.get().lines()).hasSize(1);
     assertThat(found.get().lines().get(0).lineNumber()).isEqualTo(7);

@@ -36,12 +36,20 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * In-memory implementation of {@link AccountPatchLineReviewStore} for tests.
+ * In-memory {@link AccountPatchLineReviewStore} for acceptance and unit tests.
+ *
+ * <p>Behavior mirrors {@link com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore}:
+ * same normalization of {@link LineReviewedInput}, {@link ReviewStatus#READ} vs {@link
+ * ReviewStatus#TENTATIVELY_READ}, and {@code tentativeCarryover} semantics when clearing an explicit
+ * mark that originated from propagation. Data lives in a {@link HashSet} of {@link LineEntity}
+ * rows keyed implicitly by patch set, account, path, side, and line/character range; all access is
+ * {@code synchronized} on that set (no JDBC, no persistence across JVMs).
  */
 @Singleton
 public class FakeAccountPatchLineReviewStore
     implements AccountPatchLineReviewStore, LifecycleListener {
 
+  /** One entry per distinct reviewed region (same identity fields as the SQL primary key). */
   private final Set<LineEntity> store = new HashSet<>();
 
   @Override
@@ -50,6 +58,7 @@ public class FakeAccountPatchLineReviewStore
   @Override
   public void stop() {}
 
+  /** Guice module that binds {@link AccountPatchLineReviewStore} to this fake (test sites). */
   public static class FakeAccountPatchLineReviewStoreModule extends LifecycleModule {
     @Override
     protected void configure() {
@@ -59,6 +68,10 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Internal row: patch set, account, file path, line/range geometry, review status, and whether
+   * the row was introduced by carryover propagation ({@code tentativeCarryover}).
+   */
   @AutoValue
   abstract static class LineEntity {
     abstract PatchSet.Id psId();
@@ -110,6 +123,10 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Same rules as {@link com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore#normalizeInput}:
+   * derive {@code lineNumber} and inclusive range from REST input.
+   */
   private static void normalize(
       LineReviewedInput input,
       int[] lineNumber,
@@ -162,6 +179,10 @@ public class FakeAccountPatchLineReviewStore
     return Optional.empty();
   }
 
+  /**
+   * Inserts {@link ReviewStatus#READ} or upgrades {@link ReviewStatus#TENTATIVELY_READ} to {@code
+   * READ}, preserving {@code tentativeCarryover}. Returns whether the store changed.
+   */
   @Override
   public boolean markLineReviewed(
       PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
@@ -222,6 +243,7 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /** Delegates to {@link #markLineReviewed(PatchSet.Id, Account.Id, String, LineReviewedInput)} per input. */
   @Override
   public void markLineReviewed(
       PatchSet.Id psId,
@@ -234,6 +256,10 @@ public class FakeAccountPatchLineReviewStore
         });
   }
 
+  /**
+   * Removes the row, or if it is {@link ReviewStatus#READ} with carryover provenance, replaces it
+   * with {@link ReviewStatus#TENTATIVELY_READ} so the propagated hint is not lost.
+   */
   @Override
   public void clearLineReviewed(
       PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
@@ -330,6 +356,10 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Skips geometries that already exist; otherwise inserts {@link ReviewStatus#TENTATIVELY_READ}
+   * with carryover set (same as JDBC propagation path; no duplicate-key exceptions in-memory).
+   */
   @Override
   public void insertPropagatedTentativeReviews(
       PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
@@ -371,6 +401,7 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /** Returns all matching lines for the account and patch set, optionally filtered to one path. */
   @Override
   public Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path) {

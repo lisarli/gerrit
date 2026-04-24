@@ -142,6 +142,7 @@ public class LineReviewPropagationTest {
     verify(store).insertPropagatedTentativeReviews(eq(PS2), eq(ACCOUNT_ID), captor.capture());
     assertThat(captor.getValue()).hasSize(1);
     ReviewedLine propagated = captor.getValue().iterator().next();
+    // Geometry is remapped (5 -> 7) but status is downgraded to TENTATIVELY_READ on carryover.
     assertThat(propagated.path()).isEqualTo(FILE);
     assertThat(propagated.lineNumber()).isEqualTo(7);
     assertThat(propagated.reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);

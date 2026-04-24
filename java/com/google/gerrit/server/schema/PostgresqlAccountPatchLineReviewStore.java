@@ -24,6 +24,14 @@ import com.google.inject.Singleton;
 import java.sql.SQLException;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for PostgreSQL.
+ *
+ * <p>{@link #convertError}: SQLSTATE {@code 23505} ({@code unique_violation}) becomes {@link
+ * DuplicateKeyException} for idempotent propagation. {@code 23514} (check), {@code 23503} (foreign
+ * key), {@code 23502} (not null), and {@code 23001} (restrict) are wrapped as {@link
+ * StorageException} with the same message path as other failures.
+ */
 @Singleton
 public class PostgresqlAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
