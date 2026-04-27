@@ -56,8 +56,6 @@ import com.google.gerrit.acceptance.testsuite.account.AccountOperations;
 import com.google.gerrit.acceptance.testsuite.change.ChangeOperations;
 import com.google.gerrit.acceptance.testsuite.project.ProjectOperations;
 import com.google.gerrit.acceptance.testsuite.request.RequestScopeOperations;
-import com.google.gerrit.acceptance.testsuite.project.ProjectOperations;
-import com.google.gerrit.acceptance.testsuite.request.RequestScopeOperations;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.BranchNameKey;
 import com.google.gerrit.entities.BranchOrderSection;
@@ -72,6 +70,7 @@ import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.common.LineReviewedInfo;
+import com.google.gerrit.extensions.common.LineReviewHistoryInfo;
 import com.google.gson.reflect.TypeToken;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.extensions.api.changes.ChangeApi;
@@ -2020,6 +2019,119 @@ public class RevisionIT extends AbstractDaemonTest {
     adminRestSession.delete(reviewedLinesUrl(r.getChangeId())).assertBadRequest();
   }
 
+  // -- HTTP-level tests for the all_reviewed_lines REST endpoint --
+
+  private String allReviewedLinesUrl(String changeId) {
+    return "/changes/"
+        + changeId
+        + "/revisions/current/files/"
+        + FILE_NAME
+        + "/all_reviewed_lines";
+  }
+
+  @Test
+  public void getAllReviewedLines_noMarkers_returnsEmptyMap() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void getAllReviewedLines_singleReviewer_returnsMarkersUnderAccountId() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(admin.id().get());
+    List<LineReviewedInfo> adminLines = result.get(admin.id().get());
+    assertThat(adminLines).hasSize(1);
+    assertThat(adminLines.get(0).line).isEqualTo(5);
+    assertThat(adminLines.get(0).side).isEqualTo(Side.REVISION);
+  }
+
+  @Test
+  public void getAllReviewedLines_multipleReviewers_returnsAllMarkers() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    // Admin marks line 5
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 5;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), adminInput).assertCreated();
+
+    // User marks line 10
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 10;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r.getChangeId()), userInput).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(2);
+    assertThat(result).containsKey(admin.id().get());
+    assertThat(result).containsKey(user.id().get());
+    assertThat(result.get(admin.id().get()).get(0).line).isEqualTo(5);
+    assertThat(result.get(user.id().get()).get(0).line).isEqualTo(10);
+  }
+
+  @Test
+  public void getAllReviewedLines_markersOnOtherFile_notIncluded() throws Exception {
+    // Create a change with two files
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            "Subject",
+            ImmutableMap.of(FILE_NAME, "content", "other.txt", "other content"));
+    PushOneCommit.Result r = push.to("refs/for/master");
+
+    // Admin marks a line in FILE_NAME
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    // Query all_reviewed_lines for the other file — should be empty
+    String otherFileUrl =
+        "/changes/"
+            + r.getChangeId()
+            + "/revisions/current/files/other.txt/all_reviewed_lines";
+    RestResponse resp = adminRestSession.get(otherFileUrl);
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).isEmpty();
+  }
+
   @Test
   public void setReviewedFlagWithMultiplePatchSets() throws Exception {
     PushOneCommit push = pushFactory.create(admin.newIdent(), testRepo);
@@ -3182,5 +3294,92 @@ public class RevisionIT extends AbstractDaemonTest {
             .asString();
 
     assertThat(commitMessage).startsWith("Initial commit message");
+  }
+
+  // -- HTTP-level tests for the reviewed_line_history REST endpoint --
+
+  private String reviewedLineHistoryUrl(String changeId) {
+    return "/changes/" + changeId + "/reviewed_line_history";
+  }
+
+  @Test
+  public void getReviewedLineHistory_empty() throws Exception {
+    // A new change with no mark/unmark actions should return an empty history list.
+    PushOneCommit.Result r = createChange();
+
+    RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
+    resp.assertOK();
+    List<LineReviewHistoryInfo> history =
+        newGson()
+            .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
+    assertThat(history).isEmpty();
+  }
+
+  @Test
+  public void getReviewedLineHistory_afterMark() throws Exception {
+    // Marking a line via PUT should produce one MARKED entry with the correct file and line.
+    PushOneCommit.Result r = createChange();
+    String url = reviewedLinesUrl(r.getChangeId());
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(url, input).assertCreated();
+
+    RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
+    resp.assertOK();
+    List<LineReviewHistoryInfo> history =
+        newGson()
+            .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(0).file).isEqualTo(FILE_NAME);
+    assertThat(history.get(0).line).isEqualTo(5);
+  }
+
+  @Test
+  public void getReviewedLineHistory_afterMarkAndUnmark() throws Exception {
+    // The full mark-then-unmark sequence should be preserved in chronological order.
+    PushOneCommit.Result r = createChange();
+    String url = reviewedLinesUrl(r.getChangeId());
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 3;
+    input.side = Side.REVISION;
+    adminRestSession.put(url, input).assertCreated();
+    // RestSession.delete() doesn't support a body; use the store directly
+    accountPatchLineReviewStore.clearLineReviewed(r.getPatchSetId(), admin.id(), FILE_NAME, input);
+
+    RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
+    resp.assertOK();
+    List<LineReviewHistoryInfo> history =
+        newGson()
+            .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
+    assertThat(history).hasSize(2);
+    assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(1).action).isEqualTo("UNMARKED");
+  }
+
+  @Test
+  public void getReviewedLineHistory_unifiedAcrossUsers() throws Exception {
+    // History is shared across all users: a different user's mark is visible to admin,
+    // and the response includes the accountId of whoever performed the action.
+    PushOneCommit.Result r = createChange();
+    String linesUrl = reviewedLinesUrl(r.getChangeId());
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 7;
+    input.side = Side.REVISION;
+    userRestSession.put(linesUrl, input).assertCreated();
+
+    RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
+    resp.assertOK();
+    List<LineReviewHistoryInfo> history =
+        newGson()
+            .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(0).line).isEqualTo(7);
+    assertThat(history.get(0).accountId).isEqualTo(user.id().get());
   }
 }
