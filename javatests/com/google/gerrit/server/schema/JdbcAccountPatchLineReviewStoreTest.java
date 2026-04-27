@@ -16,6 +16,8 @@ package com.google.gerrit.server.schema;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -231,11 +233,81 @@ public class JdbcAccountPatchLineReviewStoreTest {
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_2, FILE_A)).isPresent();
   }
 
+  // -- tests for findAllReviewedLines --
+
+  @Test
+  public void findAllReviewedLines_noMarkers_returnsEmptyMap() {
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void findAllReviewedLines_singleAccount_returnsLines() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result.get(ACCOUNT_1)).hasSize(2);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(3);
+    assertThat(result.get(ACCOUNT_1).get(1).lineNumber()).isEqualTo(7);
+  }
+
+  @Test
+  public void findAllReviewedLines_multipleAccounts_groupedByAccount() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(5));
+    var unused3 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(10));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(2);
+    assertThat(result.get(ACCOUNT_1)).hasSize(1);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(1);
+    assertThat(result.get(ACCOUNT_2)).hasSize(2);
+    assertThat(result.get(ACCOUNT_2).get(0).lineNumber()).isEqualTo(5);
+    assertThat(result.get(ACCOUNT_2).get(1).lineNumber()).isEqualTo(10);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByFile() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_B, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultA =
+        store.findAllReviewedLines(PS_1, FILE_A);
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultB =
+        store.findAllReviewedLines(PS_1, FILE_B);
+
+    assertThat(resultA).hasSize(1);
+    assertThat(resultA).containsKey(ACCOUNT_1);
+    assertThat(resultB).hasSize(1);
+    assertThat(resultB).containsKey(ACCOUNT_2);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByPatchSet() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_2, ACCOUNT_2, FILE_A, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result).doesNotContainKey(ACCOUNT_2);
+  }
+
   // -- history tests --
 
   @Test
   public void markLogsMarkedEntry() {
-    // A successful mark should append one MARKED entry to the history.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
     ImmutableList<LineReviewHistoryEntry> history =
@@ -249,7 +321,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void clearLogsUnmarkedEntry() {
-    // Marking then clearing should produce MARKED followed by UNMARKED.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
@@ -263,7 +334,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void markUnmarkMark_threeEntriesInOrder() {
-    // Each state transition is recorded; re-marking after a clear appends a second MARKED entry.
     var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
     var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
@@ -279,7 +349,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void historyUnifiedAcrossAccounts() {
-    // History is per-change, not per-user: actions from all accounts appear together.
     var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
     var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(2));
 
@@ -293,7 +362,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void bulkClear_doesNotLogHistory() {
-    // Bulk clears (by patch set or change) bypass per-line tracking and don't write history.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
     store.clearLineReviewed(PS_1);
 
@@ -306,7 +374,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void idempotentMark_doesNotLogDuplicate() {
-    // Marking an already-marked line is a no-op and must not create a duplicate history entry.
     boolean first = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
     boolean second = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
 
@@ -322,7 +389,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void clearNonExistent_doesNotLogHistory() {
-    // Clearing a line that was never marked should not write any history entry.
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(99));
 
     ImmutableList<LineReviewHistoryEntry> history =

@@ -240,6 +240,34 @@ public class FakeAccountPatchLineReviewStore
   }
 
   @Override
+  public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    synchronized (store) {
+      Map<Account.Id, ImmutableList.Builder<ReviewedLine>> builders = new LinkedHashMap<>();
+      for (LineEntity entity : store) {
+        if (!entity.psId().equals(psId) || !entity.path().equals(path)) {
+          continue;
+        }
+        builders
+            .computeIfAbsent(entity.accountId(), k -> ImmutableList.builder())
+            .add(
+                ReviewedLine.create(
+                    entity.path(),
+                    entity.lineNumber(),
+                    entity.side(),
+                    entity.startLine(),
+                    entity.startChar(),
+                    entity.endLine(),
+                    entity.endChar()));
+      }
+      ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
+          ImmutableMap.builder();
+      builders.forEach((accountId, builder) -> result.put(accountId, builder.build()));
+      return result.build();
+    }
+  }
+
+  @Override
   public Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path) {
     synchronized (store) {

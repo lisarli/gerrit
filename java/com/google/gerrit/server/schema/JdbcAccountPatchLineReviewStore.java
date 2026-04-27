@@ -59,6 +59,15 @@ public abstract class JdbcAccountPatchLineReviewStore
     implements AccountPatchLineReviewStore, LifecycleListener {
   private static final FluentLogger logger = FluentLogger.forEnclosingClass();
 
+  private static final String COL_ACCOUNT_ID = "account_id";
+  private static final String COL_FILE_NAME = "file_name";
+  private static final String COL_LINE_NUMBER = "line_number";
+  private static final String COL_SIDE = "side";
+  private static final String COL_START_LINE = "start_line";
+  private static final String COL_START_CHAR = "start_char";
+  private static final String COL_END_LINE = "end_line";
+  private static final String COL_END_CHAR = "end_char";
+
   @VisibleForTesting
   public static final String TEST_IN_MEMORY_URL =
       "jdbc:h2:mem:account_patch_line_reviews;DB_CLOSE_DELAY=-1";
@@ -504,13 +513,13 @@ public abstract class JdbcAccountPatchLineReviewStore
           while (rs.next()) {
             builder.add(
                 ReviewedLine.create(
-                    rs.getString("file_name"),
-                    rs.getInt("line_number"),
-                    rs.getShort("side"),
-                    rs.getInt("start_line"),
-                    rs.getInt("start_char"),
-                    rs.getInt("end_line"),
-                    rs.getInt("end_char")));
+                    rs.getString(COL_FILE_NAME),
+                    rs.getInt(COL_LINE_NUMBER),
+                    rs.getShort(COL_SIDE),
+                    rs.getInt(COL_START_LINE),
+                    rs.getInt(COL_START_CHAR),
+                    rs.getInt(COL_END_LINE),
+                    rs.getInt(COL_END_CHAR)));
           }
           ImmutableList<ReviewedLine> lines = builder.build();
           if (lines.isEmpty()) {
@@ -599,18 +608,18 @@ public abstract class JdbcAccountPatchLineReviewStore
         ImmutableList.Builder<LineReviewHistoryEntry> builder = ImmutableList.builder();
         while (rs.next()) {
           PatchSet.Id psId = PatchSet.id(changeId, rs.getInt("patch_set_id"));
-          Account.Id accountId = Account.id(rs.getInt("account_id"));
+          Account.Id accountId = Account.id(rs.getInt(COL_ACCOUNT_ID));
           builder.add(
               LineReviewHistoryEntry.create(
                   psId,
                   accountId,
-                  rs.getString("file_name"),
-                  rs.getInt("line_number"),
-                  rs.getShort("side"),
-                  rs.getInt("start_line"),
-                  rs.getInt("start_char"),
-                  rs.getInt("end_line"),
-                  rs.getInt("end_char"),
+                  rs.getString(COL_FILE_NAME),
+                  rs.getInt(COL_LINE_NUMBER),
+                  rs.getShort(COL_SIDE),
+                  rs.getInt(COL_START_LINE),
+                  rs.getInt(COL_START_CHAR),
+                  rs.getInt(COL_END_LINE),
+                  rs.getInt(COL_END_CHAR),
                   LineReviewAction.valueOf(rs.getString("action")),
                   rs.getTimestamp("created_on")));
         }
@@ -642,22 +651,22 @@ public abstract class JdbcAccountPatchLineReviewStore
       try (ResultSet rs = stmt.executeQuery()) {
         Map<Account.Id, ImmutableList.Builder<ReviewedLine>> builders = new LinkedHashMap<>();
         while (rs.next()) {
-          Account.Id acctId = Account.id(rs.getInt("account_id"));
+          Account.Id accountId = Account.id(rs.getInt(COL_ACCOUNT_ID));
           builders
-              .computeIfAbsent(acctId, k -> ImmutableList.builder())
+              .computeIfAbsent(accountId, k -> ImmutableList.builder())
               .add(
                   ReviewedLine.create(
-                      rs.getString("file_name"),
-                      rs.getInt("line_number"),
-                      rs.getShort("side"),
-                      rs.getInt("start_line"),
-                      rs.getInt("start_char"),
-                      rs.getInt("end_line"),
-                      rs.getInt("end_char")));
+                      rs.getString(COL_FILE_NAME),
+                      rs.getInt(COL_LINE_NUMBER),
+                      rs.getShort(COL_SIDE),
+                      rs.getInt(COL_START_LINE),
+                      rs.getInt(COL_START_CHAR),
+                      rs.getInt(COL_END_LINE),
+                      rs.getInt(COL_END_CHAR)));
         }
         ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
             ImmutableMap.builder();
-        builders.forEach((acctId, b) -> result.put(acctId, b.build()));
+        builders.forEach((accountId, builder) -> result.put(accountId, builder.build()));
         return result.build();
       }
     } catch (SQLException e) {
