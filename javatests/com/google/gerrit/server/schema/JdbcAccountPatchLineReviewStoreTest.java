@@ -18,6 +18,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -25,7 +26,10 @@ import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.Comment.Range;
 import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
+import com.google.common.collect.ImmutableList;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewAction;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewHistoryEntry;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.PatchSetWithReviewedLines;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.ReviewedLine;
 import java.sql.Connection;
@@ -65,6 +69,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     try (Connection con = store.getConnection();
         Statement stmt = con.createStatement()) {
       stmt.executeUpdate("DROP TABLE IF EXISTS account_patch_line_reviews");
+      stmt.executeUpdate("DROP TABLE IF EXISTS account_patch_line_review_history");
     }
   }
 
@@ -327,5 +332,167 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
 
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, null).get().lines()).hasSize(1);
+  // -- tests for findAllReviewedLines --
+
+  @Test
+  public void findAllReviewedLines_noMarkers_returnsEmptyMap() {
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void findAllReviewedLines_singleAccount_returnsLines() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result.get(ACCOUNT_1)).hasSize(2);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(3);
+    assertThat(result.get(ACCOUNT_1).get(1).lineNumber()).isEqualTo(7);
+  }
+
+  @Test
+  public void findAllReviewedLines_multipleAccounts_groupedByAccount() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(5));
+    var unused3 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(10));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(2);
+    assertThat(result.get(ACCOUNT_1)).hasSize(1);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(1);
+    assertThat(result.get(ACCOUNT_2)).hasSize(2);
+    assertThat(result.get(ACCOUNT_2).get(0).lineNumber()).isEqualTo(5);
+    assertThat(result.get(ACCOUNT_2).get(1).lineNumber()).isEqualTo(10);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByFile() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_B, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultA =
+        store.findAllReviewedLines(PS_1, FILE_A);
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultB =
+        store.findAllReviewedLines(PS_1, FILE_B);
+
+    assertThat(resultA).hasSize(1);
+    assertThat(resultA).containsKey(ACCOUNT_1);
+    assertThat(resultB).hasSize(1);
+    assertThat(resultB).containsKey(ACCOUNT_2);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByPatchSet() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_2, ACCOUNT_2, FILE_A, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result).doesNotContainKey(ACCOUNT_2);
+  }
+
+  // -- history tests --
+
+  @Test
+  public void markLogsMarkedEntry() {
+    var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+    assertThat(history.get(0).path()).isEqualTo(FILE_A);
+    assertThat(history.get(0).lineNumber()).isEqualTo(5);
+  }
+
+  @Test
+  public void clearLogsUnmarkedEntry() {
+    var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(2);
+    assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+    assertThat(history.get(1).action()).isEqualTo(LineReviewAction.UNMARKED);
+  }
+
+  @Test
+  public void markUnmarkMark_threeEntriesInOrder() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(3);
+    assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+    assertThat(history.get(1).action()).isEqualTo(LineReviewAction.UNMARKED);
+    assertThat(history.get(2).action()).isEqualTo(LineReviewAction.MARKED);
+  }
+
+  @Test
+  public void historyUnifiedAcrossAccounts() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(2));
+
+    ImmutableList<LineReviewHistoryEntry> history = store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(2);
+    assertThat(history.stream().map(LineReviewHistoryEntry::accountId))
+        .containsExactly(ACCOUNT_1, ACCOUNT_2)
+        .inOrder();
+  }
+
+  @Test
+  public void bulkClear_doesNotLogHistory() {
+    var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    store.clearLineReviewed(PS_1);
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+  }
+
+  @Test
+  public void idempotentMark_doesNotLogDuplicate() {
+    boolean first = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+    boolean second = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    assertThat(first).isTrue();
+    assertThat(second).isFalse();
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).hasSize(1);
+    assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+  }
+
+  @Test
+  public void clearNonExistent_doesNotLogHistory() {
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(99));
+
+    ImmutableList<LineReviewHistoryEntry> history =
+        store.findLineReviewHistory(CHANGE_1);
+
+    assertThat(history).isEmpty();
   }
 }
