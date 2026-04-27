@@ -188,6 +188,7 @@ public class ChangeRestApiModule extends RestApiModule {
     post(REVISION_KIND, "test.submit_rule").to(TestSubmitRule.class);
     post(REVISION_KIND, "test.submit_type").to(TestSubmitType.class);
 
+    get(CHANGE_KIND, "reviewed_line_history").to(GetLineReviewHistory.class);
     get(CHANGE_KIND, "robotcomments").to(ListChangeRobotComments.class);
     delete(CHANGE_KIND, "topic").to(PutTopic.class);
     get(CHANGE_KIND, "topic").to(GetTopic.class);

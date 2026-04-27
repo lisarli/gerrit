@@ -45,6 +45,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -237,6 +238,14 @@ public abstract class JdbcAccountPatchLineReviewStore
           .withCause(e)
           .log("Failed to create table to store account patch line reviews");
     }
+    try {
+      createHistoryTableIfNotExists();
+    } catch (StorageException e) {
+      logger
+          .atSevere()
+          .withCause(e)
+          .log("Failed to create table to store account patch line review history");
+    }
   }
 
   public Connection getConnection() throws SQLException {
@@ -250,6 +259,34 @@ public abstract class JdbcAccountPatchLineReviewStore
     } catch (SQLException e) {
       throw convertError("create", e);
     }
+  }
+
+  public void createHistoryTableIfNotExists() {
+    try (Connection con = ds.getConnection();
+        Statement stmt = con.createStatement()) {
+      doCreateHistoryTable(stmt);
+    } catch (SQLException e) {
+      throw convertError("create", e);
+    }
+  }
+
+  protected void doCreateHistoryTable(Statement stmt) throws SQLException {
+    stmt.executeUpdate(
+        "CREATE TABLE IF NOT EXISTS account_patch_line_review_history ("
+            + "id BIGINT GENERATED ALWAYS AS IDENTITY, "
+            + "account_id INTEGER DEFAULT 0 NOT NULL, "
+            + "change_id INTEGER DEFAULT 0 NOT NULL, "
+            + "patch_set_id INTEGER DEFAULT 0 NOT NULL, "
+            + "file_name VARCHAR(4096) DEFAULT '' NOT NULL, "
+            + "line_number INTEGER DEFAULT 1 NOT NULL, "
+            + "side SMALLINT DEFAULT 1 NOT NULL, "
+            + "start_line INTEGER DEFAULT 1 NOT NULL, "
+            + "start_char INTEGER DEFAULT 0 NOT NULL, "
+            + "end_line INTEGER DEFAULT 1 NOT NULL, "
+            + "end_char INTEGER DEFAULT 0 NOT NULL, "
+            + "action VARCHAR(10) DEFAULT 'MARKED' NOT NULL, "
+            + "created_on TIMESTAMP NOT NULL"
+            + ")");
   }
 
   protected void doCreateTable(Statement stmt) throws SQLException {
@@ -290,31 +327,43 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .accountId(accountId.get())
                     .filePath(path)
                     .build());
-        Connection con = ds.getConnection();
-        PreparedStatement stmt =
-            con.prepareStatement(
-                "INSERT INTO account_patch_line_reviews "
-                    + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
-                    + "start_line, start_char, end_line, end_char) VALUES "
-                    + "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-      stmt.setInt(1, accountId.get());
-      stmt.setInt(2, psId.changeId().get());
-      stmt.setInt(3, psId.get());
-      stmt.setString(4, path);
-      stmt.setInt(5, lineNumber[0]);
-      stmt.setShort(6, sideToShort(side));
-      stmt.setInt(7, startLine[0]);
-      stmt.setInt(8, startChar[0]);
-      stmt.setInt(9, endLine[0]);
-      stmt.setInt(10, endChar[0]);
-      stmt.executeUpdate();
+        Connection con = ds.getConnection()) {
+      try (PreparedStatement stmt =
+          con.prepareStatement(
+              "INSERT INTO account_patch_line_reviews "
+                  + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+                  + "start_line, start_char, end_line, end_char) VALUES "
+                  + "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+        stmt.setInt(1, accountId.get());
+        stmt.setInt(2, psId.changeId().get());
+        stmt.setInt(3, psId.get());
+        stmt.setString(4, path);
+        stmt.setInt(5, lineNumber[0]);
+        stmt.setShort(6, sideToShort(side));
+        stmt.setInt(7, startLine[0]);
+        stmt.setInt(8, startChar[0]);
+        stmt.setInt(9, endLine[0]);
+        stmt.setInt(10, endChar[0]);
+        stmt.executeUpdate();
+      } catch (SQLException e) {
+        StorageException ormException = convertError("insert", e);
+        if (ormException instanceof DuplicateKeyException) {
+          return false; // already marked — do not log
+        }
+        throw ormException;
+      }
+      // Log the mark action (best-effort: don't fail the main operation on history write failure)
+      try {
+        insertHistoryEntry(
+            con, psId, accountId, path, lineNumber[0],
+            sideToShort(side), startLine[0], startChar[0], endLine[0], endChar[0],
+            LineReviewAction.MARKED);
+      } catch (SQLException e) {
+        logger.atWarning().withCause(e).log("Failed to log MARKED action to history");
+      }
       return true;
     } catch (SQLException e) {
-      StorageException ormException = convertError("insert", e);
-      if (ormException instanceof DuplicateKeyException) {
-        return false;
-      }
-      throw ormException;
+      throw convertError("insert", e);
     }
   }
 
@@ -348,23 +397,36 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .accountId(accountId.get())
                     .filePath(path)
                     .build());
-        Connection con = ds.getConnection();
-        PreparedStatement stmt =
-            con.prepareStatement(
-                "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
-                    + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
-                    + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
-      stmt.setInt(1, accountId.get());
-      stmt.setInt(2, psId.changeId().get());
-      stmt.setInt(3, psId.get());
-      stmt.setString(4, path);
-      stmt.setInt(5, lineNumber[0]);
-      stmt.setShort(6, sideToShort(side));
-      stmt.setInt(7, startLine[0]);
-      stmt.setInt(8, startChar[0]);
-      stmt.setInt(9, endLine[0]);
-      stmt.setInt(10, endChar[0]);
-      stmt.executeUpdate();
+        Connection con = ds.getConnection()) {
+      int affected;
+      try (PreparedStatement stmt =
+          con.prepareStatement(
+              "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
+                  + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
+                  + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
+        stmt.setInt(1, accountId.get());
+        stmt.setInt(2, psId.changeId().get());
+        stmt.setInt(3, psId.get());
+        stmt.setString(4, path);
+        stmt.setInt(5, lineNumber[0]);
+        stmt.setShort(6, sideToShort(side));
+        stmt.setInt(7, startLine[0]);
+        stmt.setInt(8, startChar[0]);
+        stmt.setInt(9, endLine[0]);
+        stmt.setInt(10, endChar[0]);
+        affected = stmt.executeUpdate();
+      }
+      // Only log if a row was actually deleted (don't log no-ops)
+      if (affected > 0) {
+        try {
+          insertHistoryEntry(
+              con, psId, accountId, path, lineNumber[0],
+              sideToShort(side), startLine[0], startChar[0], endLine[0], endChar[0],
+              LineReviewAction.UNMARKED);
+        } catch (SQLException e) {
+          logger.atWarning().withCause(e).log("Failed to log UNMARKED action to history");
+        }
+      }
     } catch (SQLException e) {
       throw convertError("delete", e);
     }
@@ -465,6 +527,103 @@ public abstract class JdbcAccountPatchLineReviewStore
           }
           return Optional.of(PatchSetWithReviewedLines.create(psId, lines));
         }
+      }
+    } catch (SQLException e) {
+      throw convertError("select", e);
+    }
+  }
+
+  /** Inserts a single row into the history table on the given already-open connection. */
+  protected void insertHistoryEntry(
+      Connection con,
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar,
+      LineReviewAction action)
+      throws SQLException {
+    try (PreparedStatement stmt =
+        con.prepareStatement(
+            "INSERT INTO account_patch_line_review_history "
+                + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+                + "start_line, start_char, end_line, end_char, action, created_on) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+      stmt.setInt(1, accountId.get());
+      stmt.setInt(2, psId.changeId().get());
+      stmt.setInt(3, psId.get());
+      stmt.setString(4, path);
+      stmt.setInt(5, lineNumber);
+      stmt.setShort(6, side);
+      stmt.setInt(7, startLine);
+      stmt.setInt(8, startChar);
+      stmt.setInt(9, endLine);
+      stmt.setInt(10, endChar);
+      stmt.setString(11, action.name());
+      stmt.setTimestamp(12, new Timestamp(System.currentTimeMillis()));
+      stmt.executeUpdate();
+    }
+  }
+
+  @Override
+  public void logLineReviewAction(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      LineReviewedInput input,
+      LineReviewAction action) {
+    Side side = input.side != null ? input.side : Side.REVISION;
+    int[] lineNumber = new int[1];
+    int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
+    normalizeInput(input, lineNumber, startLine, startChar, endLine, endChar);
+    try (Connection con = ds.getConnection()) {
+      insertHistoryEntry(
+          con, psId, accountId, path, lineNumber[0],
+          sideToShort(side), startLine[0], startChar[0], endLine[0], endChar[0], action);
+    } catch (SQLException e) {
+      throw convertError("insert", e);
+    }
+  }
+
+  @Override
+  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
+    try (TraceTimer ignored =
+            TraceContext.newTimer(
+                "Find line review history",
+                Metadata.builder().changeId(changeId.get()).build());
+        Connection con = ds.getConnection();
+        PreparedStatement stmt =
+            con.prepareStatement(
+                "SELECT account_id, patch_set_id, file_name, line_number, side, start_line, "
+                    + "start_char, end_line, end_char, action, created_on "
+                    + "FROM account_patch_line_review_history "
+                    + "WHERE change_id = ? "
+                    + "ORDER BY created_on ASC")) {
+      stmt.setInt(1, changeId.get());
+      try (ResultSet rs = stmt.executeQuery()) {
+        ImmutableList.Builder<LineReviewHistoryEntry> builder = ImmutableList.builder();
+        while (rs.next()) {
+          PatchSet.Id psId = PatchSet.id(changeId, rs.getInt("patch_set_id"));
+          Account.Id accountId = Account.id(rs.getInt(COL_ACCOUNT_ID));
+          builder.add(
+              LineReviewHistoryEntry.create(
+                  psId,
+                  accountId,
+                  rs.getString(COL_FILE_NAME),
+                  rs.getInt(COL_LINE_NUMBER),
+                  rs.getShort(COL_SIDE),
+                  rs.getInt(COL_START_LINE),
+                  rs.getInt(COL_START_CHAR),
+                  rs.getInt(COL_END_LINE),
+                  rs.getInt(COL_END_CHAR),
+                  LineReviewAction.valueOf(rs.getString("action")),
+                  rs.getTimestamp("created_on")));
+        }
+        return builder.build();
       }
     } catch (SQLException e) {
       throw convertError("select", e);

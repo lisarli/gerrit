@@ -87,6 +87,7 @@ public class ChangesRestApiBindingsIT extends AbstractDaemonTest {
           RestCall.post("/changes/%s/reviewers"),
           // GET /changes/<change-id>/revisions is not implemented
           RestCall.builder(GET, "/changes/%s/revisions").expectedResponseCode(SC_NOT_FOUND).build(),
+          RestCall.get("/changes/%s/reviewed_line_history"),
           RestCall.builder(GET, "/changes/%s/robotcomments")
               .expectedResponseCode(SC_NOT_FOUND)
               .build(),
