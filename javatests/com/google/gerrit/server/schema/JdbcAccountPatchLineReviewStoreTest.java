@@ -235,6 +235,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void markLogsMarkedEntry() {
+    // A successful mark should append one MARKED entry to the history.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
     ImmutableList<LineReviewHistoryEntry> history =
@@ -248,6 +249,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void clearLogsUnmarkedEntry() {
+    // Marking then clearing should produce MARKED followed by UNMARKED.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
 
@@ -261,6 +263,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void markUnmarkMark_threeEntriesInOrder() {
+    // Each state transition is recorded; re-marking after a clear appends a second MARKED entry.
     var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
     var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
@@ -276,6 +279,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void historyUnifiedAcrossAccounts() {
+    // History is per-change, not per-user: actions from all accounts appear together.
     var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
     var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(2));
 
@@ -289,8 +293,8 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void bulkClear_doesNotLogHistory() {
+    // Bulk clears (by patch set or change) bypass per-line tracking and don't write history.
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
-    // Bulk clear by patch set — should NOT add an UNMARKED history entry
     store.clearLineReviewed(PS_1);
 
     ImmutableList<LineReviewHistoryEntry> history =
@@ -302,6 +306,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void idempotentMark_doesNotLogDuplicate() {
+    // Marking an already-marked line is a no-op and must not create a duplicate history entry.
     boolean first = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
     boolean second = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
 
@@ -317,6 +322,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
   @Test
   public void clearNonExistent_doesNotLogHistory() {
+    // Clearing a line that was never marked should not write any history entry.
     store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(99));
 
     ImmutableList<LineReviewHistoryEntry> history =

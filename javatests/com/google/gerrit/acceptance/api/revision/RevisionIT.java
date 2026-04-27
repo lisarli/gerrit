@@ -3024,6 +3024,7 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_empty() throws Exception {
+    // A new change with no mark/unmark actions should return an empty history list.
     PushOneCommit.Result r = createChange();
 
     RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
@@ -3036,6 +3037,7 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_afterMark() throws Exception {
+    // Marking a line via PUT should produce one MARKED entry with the correct file and line.
     PushOneCommit.Result r = createChange();
     String url = reviewedLinesUrl(r.getChangeId());
 
@@ -3057,6 +3059,7 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_afterMarkAndUnmark() throws Exception {
+    // The full mark-then-unmark sequence should be preserved in chronological order.
     PushOneCommit.Result r = createChange();
     String url = reviewedLinesUrl(r.getChangeId());
 
@@ -3079,16 +3082,16 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_unifiedAcrossUsers() throws Exception {
+    // History is shared across all users: a different user's mark is visible to admin,
+    // and the response includes the accountId of whoever performed the action.
     PushOneCommit.Result r = createChange();
     String linesUrl = reviewedLinesUrl(r.getChangeId());
 
-    // user marks a line
     LineReviewedInput input = new LineReviewedInput();
     input.line = 7;
     input.side = Side.REVISION;
     userRestSession.put(linesUrl, input).assertCreated();
 
-    // admin sees the unified history including user's action
     RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
     resp.assertOK();
     List<LineReviewHistoryInfo> history =
