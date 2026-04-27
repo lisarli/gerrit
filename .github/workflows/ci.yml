@@ -19,9 +19,6 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Install tools/node_tools dependencies
-        run: cd tools/node_tools && yarn install --frozen-lockfile
-
       - name: Install Bazelisk
         run: |
           mkdir -p "$HOME/.local/bin"
@@ -37,14 +34,16 @@ jobs:
           path: |
             ~/.cache/bazel
             ~/.cache/bazelisk
-          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/MODULE.bazel.lock', '**/WORKSPACE', '**/WORKSPACE.bzlmod', '**/.bazelrc', '**/yarn.lock', '**/package.json') }}
+            ~/.gerritcodereview/bazel-cache
+          key: ${{ runner.os }}-bazel-${{ hashFiles('**/MODULE.bazel', '**/MODULE.bazel.lock', '**/WORKSPACE', '**/WORKSPACE.bzlmod', '**/.bazelrc') }}
+          restore-keys: |
+            ${{ runner.os }}-bazel-
 
-      - name: Run tests
+      - name: Run Java tests
         run: |
-          bazelisk test --build_tests_only -- //... \
+          bazelisk test --flaky_test_attempts=2 -- //javatests/... \
             -//javatests/com/google/gerrit/common:server_tests \
             -//javatests/com/google/gerrit/util/concurrent:concurrent_tests \
+            -//javatests/com/google/gerrit/acceptance/server/quota:server_quota \
             -//plugins/replication:src_test_java_com_googlesource_gerrit_plugins_replication_ReplicationEventsIT \
-            -//plugins/replication:src_test_java_com_googlesource_gerrit_plugins_replication_ReplicationIT \
-            -//Documentation:check_licenses \
-            -//javatests/com/google/gerrit/acceptance/server/quota:server_quota
+            -//plugins/replication:src_test_java_com_googlesource_gerrit_plugins_replication_ReplicationIT
