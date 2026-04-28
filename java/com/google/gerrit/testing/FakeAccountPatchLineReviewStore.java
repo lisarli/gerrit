@@ -16,11 +16,13 @@ package com.google.gerrit.testing;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.events.LifecycleListener;
 import com.google.gerrit.extensions.registration.DynamicItem;
@@ -40,12 +42,20 @@ import java.util.Optional;
 import java.util.Set;
 
 /**
- * In-memory implementation of {@link AccountPatchLineReviewStore} for tests.
+ * In-memory {@link AccountPatchLineReviewStore} for acceptance and unit tests.
+ *
+ * <p>Behavior mirrors {@link com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore}:
+ * same normalization of {@link LineReviewedInput}, {@link ReviewStatus#READ} vs {@link
+ * ReviewStatus#TENTATIVELY_READ}, and {@code tentativeCarryover} semantics when clearing an explicit
+ * mark that originated from propagation. Data lives in a {@link HashSet} of {@link LineEntity}
+ * rows keyed implicitly by patch set, account, path, side, and line/character range; all access is
+ * {@code synchronized} on that set (no JDBC, no persistence across JVMs).
  */
 @Singleton
 public class FakeAccountPatchLineReviewStore
     implements AccountPatchLineReviewStore, LifecycleListener {
 
+  /** One entry per distinct reviewed region (same identity fields as the SQL primary key). */
   private final Set<LineEntity> store = new HashSet<>();
   private final List<LineReviewHistoryEntry> history = new ArrayList<>();
 
@@ -55,6 +65,7 @@ public class FakeAccountPatchLineReviewStore
   @Override
   public void stop() {}
 
+  /** Guice module that binds {@link AccountPatchLineReviewStore} to this fake (test sites). */
   public static class FakeAccountPatchLineReviewStoreModule extends LifecycleModule {
     @Override
     protected void configure() {
@@ -64,6 +75,10 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /**
+   * Internal row: patch set, account, file path, line/range geometry, review status, and whether
+   * the row was introduced by carryover propagation ({@code tentativeCarryover}).
+   */
   @AutoValue
   abstract static class LineEntity {
     abstract PatchSet.Id psId();
@@ -84,6 +99,10 @@ public class FakeAccountPatchLineReviewStore
 
     abstract int endChar();
 
+    abstract ReviewStatus reviewStatus();
+
+    abstract boolean tentativeCarryover();
+
     static LineEntity create(
         PatchSet.Id psId,
         Account.Id accountId,
@@ -93,12 +112,28 @@ public class FakeAccountPatchLineReviewStore
         int startLine,
         int startChar,
         int endLine,
-        int endChar) {
+        int endChar,
+        ReviewStatus reviewStatus,
+        boolean tentativeCarryover) {
       return new AutoValue_FakeAccountPatchLineReviewStore_LineEntity(
-          psId, accountId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+          psId,
+          accountId,
+          path,
+          lineNumber,
+          side,
+          startLine,
+          startChar,
+          endLine,
+          endChar,
+          reviewStatus,
+          tentativeCarryover);
     }
   }
 
+  /**
+   * Same rules as {@link com.google.gerrit.server.schema.JdbcAccountPatchLineReviewStore#normalizeInput}:
+   * derive {@code lineNumber} and inclusive range from REST input.
+   */
   private static void normalize(
       LineReviewedInput input,
       int[] lineNumber,
@@ -124,6 +159,37 @@ public class FakeAccountPatchLineReviewStore
     }
   }
 
+  /** Caller must hold {@code synchronized (store)}. */
+  private Optional<LineEntity> findEntity(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar) {
+    for (LineEntity e : store) {
+      if (e.psId().equals(psId)
+          && e.accountId().equals(accountId)
+          && e.path().equals(path)
+          && e.lineNumber() == lineNumber
+          && e.side() == side
+          && e.startLine() == startLine
+          && e.startChar() == startChar
+          && e.endLine() == endLine
+          && e.endChar() == endChar) {
+        return Optional.of(e);
+      }
+    }
+    return Optional.empty();
+  }
+
+  /**
+   * Inserts {@link ReviewStatus#READ} or upgrades {@link ReviewStatus#TENTATIVELY_READ} to {@code
+   * READ}, preserving {@code tentativeCarryover}. Returns whether the store changed.
+   */
   @Override
   public boolean markLineReviewed(
       PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
@@ -133,20 +199,58 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
-    LineEntity entity =
-        LineEntity.create(
-            psId,
-            accountId,
-            path,
-            lineNumber[0],
-            sideShort,
-            startLine[0],
-            startChar[0],
-            endLine[0],
-            endChar[0]);
     boolean added;
     synchronized (store) {
-      added = store.add(entity);
+      Optional<LineEntity> existing =
+          findEntity(
+              psId,
+              accountId,
+              path,
+              lineNumber[0],
+              sideShort,
+              startLine[0],
+              startChar[0],
+              endLine[0],
+              endChar[0]);
+      if (existing.isEmpty()) {
+        added =
+            store.add(
+                LineEntity.create(
+                    psId,
+                    accountId,
+                    path,
+                    lineNumber[0],
+                    sideShort,
+                    startLine[0],
+                    startChar[0],
+                    endLine[0],
+                    endChar[0],
+                    ReviewStatus.READ,
+                    false));
+      } else {
+        LineEntity e = existing.get();
+        if (e.reviewStatus() == ReviewStatus.READ) {
+          added = false;
+        } else if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
+          store.remove(e);
+          added =
+              store.add(
+                  LineEntity.create(
+                      psId,
+                      accountId,
+                      path,
+                      lineNumber[0],
+                      sideShort,
+                      startLine[0],
+                      startChar[0],
+                      endLine[0],
+                      endChar[0],
+                      ReviewStatus.READ,
+                      e.tentativeCarryover()));
+        } else {
+          added = false;
+        }
+      }
     }
     if (added) {
       synchronized (history) {
@@ -160,18 +264,26 @@ public class FakeAccountPatchLineReviewStore
     return added;
   }
 
+  /** Delegates to {@link #markLineReviewed(PatchSet.Id, Account.Id, String, LineReviewedInput)} per input. */
   @Override
   public void markLineReviewed(
       PatchSet.Id psId,
       Account.Id accountId,
       String path,
       Collection<LineReviewedInput> inputs) {
+    if (inputs == null || inputs.isEmpty()) {
+      return;
+    }
     inputs.forEach(
         input -> {
           var unused = markLineReviewed(psId, accountId, path, input);
         });
   }
 
+  /**
+   * Removes the row, or if it is {@link ReviewStatus#READ} with carryover provenance, replaces it
+   * with {@link ReviewStatus#TENTATIVELY_READ} so the propagated hint is not lost.
+   */
   @Override
   public void clearLineReviewed(
       PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
@@ -181,15 +293,42 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
-    LineEntity entity =
-        LineEntity.create(
-            psId, accountId, path, lineNumber[0], sideShort,
-            startLine[0], startChar[0], endLine[0], endChar[0]);
-    boolean removed;
+    boolean changed;
     synchronized (store) {
-      removed = store.remove(entity);
+      Optional<LineEntity> existing =
+          findEntity(
+              psId,
+              accountId,
+              path,
+              lineNumber[0],
+              sideShort,
+              startLine[0],
+              startChar[0],
+              endLine[0],
+              endChar[0]);
+      if (existing.isEmpty()) {
+        return;
+      }
+      LineEntity e = existing.get();
+      store.remove(e);
+      if (e.reviewStatus() == ReviewStatus.READ && e.tentativeCarryover()) {
+        store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                ReviewStatus.TENTATIVELY_READ,
+                true));
+      }
+      changed = true;
     }
-    if (removed) {
+    if (changed) {
       synchronized (history) {
         history.add(
             LineReviewHistoryEntry.create(
@@ -240,6 +379,65 @@ public class FakeAccountPatchLineReviewStore
   }
 
   @Override
+  public ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
+    synchronized (store) {
+      ImmutableSet.Builder<Account.Id> b = ImmutableSet.builder();
+      for (LineEntity entity : store) {
+        if (entity.psId().equals(psId)) {
+          b.add(entity.accountId());
+        }
+      }
+      return b.build();
+    }
+  }
+
+  /**
+   * Skips geometries that already exist; otherwise inserts {@link ReviewStatus#TENTATIVELY_READ}
+   * with carryover set (same as JDBC propagation path; no duplicate-key exceptions in-memory).
+   */
+  @Override
+  public void insertPropagatedTentativeReviews(
+      PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
+    if (lines == null || lines.isEmpty()) {
+      return;
+    }
+    synchronized (store) {
+      for (ReviewedLine line : lines) {
+        if (line == null) {
+          continue;
+        }
+        if (findEntity(
+                psId,
+                accountId,
+                line.path(),
+                line.lineNumber(),
+                line.side(),
+                line.startLine(),
+                line.startChar(),
+                line.endLine(),
+                line.endChar())
+            .isPresent()) {
+          continue;
+        }
+        store.add(
+            LineEntity.create(
+                psId,
+                accountId,
+                line.path(),
+                line.lineNumber(),
+                line.side(),
+                line.startLine(),
+                line.startChar(),
+                line.endLine(),
+                line.endChar(),
+                ReviewStatus.TENTATIVELY_READ,
+                true));
+      }
+    }
+  }
+
+  /** Returns all matching lines for the account and patch set, optionally filtered to one path. */
+  @Override
   public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
       PatchSet.Id psId, String path) {
     synchronized (store) {
@@ -258,7 +456,8 @@ public class FakeAccountPatchLineReviewStore
                     entity.startLine(),
                     entity.startChar(),
                     entity.endLine(),
-                    entity.endChar()));
+                    entity.endChar(),
+                    entity.reviewStatus()));
       }
       ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
           ImmutableMap.builder();
@@ -287,7 +486,8 @@ public class FakeAccountPatchLineReviewStore
                 entity.startLine(),
                 entity.startChar(),
                 entity.endLine(),
-                entity.endChar()));
+                entity.endChar(),
+                entity.reviewStatus()));
       }
       ImmutableList<ReviewedLine> lines = builder.build();
       if (lines.isEmpty()) {

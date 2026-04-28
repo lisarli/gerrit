@@ -32,9 +32,17 @@ import java.sql.Timestamp;
 import java.util.UUID;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for Cloud Spanner via the Spanner JDBC driver.
+ *
+ * <p>DDL uses Spanner types ({@code INT64}, {@code STRING(MAX)}, {@code BOOL}) with the same logical
+ * columns as other dialects. {@link #convertError} maps JDBC error code {@value #ERR_DUP_KEY}
+ * (Spanner duplicate key / already exists) to {@link DuplicateKeyException}.
+ */
 @Singleton
 public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
+  /** Spanner JDBC driver: duplicate primary key or unique index violation. */
   private static final int ERR_DUP_KEY = 6;
 
   @Inject
@@ -53,6 +61,12 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
     };
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Uses Spanner column types; semantics match {@link JdbcAccountPatchLineReviewStore} defaults
+   * for review status and tentative carryover across patch sets.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(
@@ -66,7 +80,9 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
             + "start_line INT64 NOT NULL DEFAULT (1),"
             + "start_char INT64 NOT NULL DEFAULT (0),"
             + "end_line INT64 NOT NULL DEFAULT (1),"
-            + "end_char INT64 NOT NULL DEFAULT (0)"
+            + "end_char INT64 NOT NULL DEFAULT (0),"
+            + "review_status INT64 NOT NULL DEFAULT (0),"
+            + "tentative_carryover BOOL NOT NULL DEFAULT (FALSE)"
             + ") PRIMARY KEY(change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)");
   }

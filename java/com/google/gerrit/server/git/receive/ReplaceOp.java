@@ -54,6 +54,7 @@ import com.google.gerrit.server.approval.ApprovalsUtil;
 import com.google.gerrit.server.change.ChangeKindCache;
 import com.google.gerrit.server.change.EmailNewPatchSet;
 import com.google.gerrit.server.change.NotifyResolver;
+import com.google.gerrit.server.change.LineReviewPropagation;
 import com.google.gerrit.server.change.ReviewerModifier;
 import com.google.gerrit.server.change.ReviewerModifier.InternalReviewerInput;
 import com.google.gerrit.server.change.ReviewerModifier.ReviewerModification;
@@ -145,6 +146,7 @@ public class ReplaceOp implements BatchUpdateOp {
   private final TopicValidator topicValidator;
   private final DiffOperationsForCommitValidation.Factory diffOperationsForCommitValidationFactory;
   private final PluginSetContext<CommitValidationInfoListener> commitValidationInfoListeners;
+  private final LineReviewPropagation lineReviewPropagation;
 
   private final ProjectState projectState;
   private final Change change;
@@ -194,6 +196,7 @@ public class ReplaceOp implements BatchUpdateOp {
       TopicValidator topicValidator,
       DiffOperationsForCommitValidation.Factory diffOperationsForCommitValidationFactory,
       PluginSetContext<CommitValidationInfoListener> commitValidationInfoListeners,
+      LineReviewPropagation lineReviewPropagation,
       @Assisted ProjectState projectState,
       @Assisted Change change,
       @Assisted boolean checkMergedInto,
@@ -226,6 +229,7 @@ public class ReplaceOp implements BatchUpdateOp {
     this.topicValidator = topicValidator;
     this.diffOperationsForCommitValidationFactory = diffOperationsForCommitValidationFactory;
     this.commitValidationInfoListeners = commitValidationInfoListeners;
+    this.lineReviewPropagation = lineReviewPropagation;
 
     this.projectState = projectState;
     this.change = change;
@@ -580,6 +584,14 @@ public class ReplaceOp implements BatchUpdateOp {
     }
     if (mergedByPushOp != null) {
       mergedByPushOp.postUpdate(ctx);
+    }
+    if (newPatchSet != null && rejectionReason == null) {
+      PatchSet priorPs = notes.getPatchSets().get(priorPatchSetId);
+      if (priorPs != null) {
+        // Mirror the PatchSetInserter path: when a replacement patch set is pushed, propagate
+        // mapped line/region markers as TENTATIVELY_READ carryover for unchanged regions.
+        lineReviewPropagation.propagateOnNewPatchSet(notes.getChange(), priorPs, newPatchSet);
+      }
     }
   }
 

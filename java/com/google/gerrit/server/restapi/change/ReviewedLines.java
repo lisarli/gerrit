@@ -14,6 +14,7 @@
 
 package com.google.gerrit.server.restapi.change;
 
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
@@ -64,6 +65,9 @@ public class ReviewedLines {
               LineReviewedInfo info = new LineReviewedInfo();
               info.line = line.lineNumber();
               info.side = line.getSide();
+              // Can be READ (explicit in this patch set) or TENTATIVELY_READ (propagated from a
+              // prior patch set for unchanged regions).
+              info.status = line.reviewStatus();
               if (line.startLine() != line.endLine()
                   || line.startChar() != 0
                   || line.endChar() != 0) {
@@ -141,6 +145,9 @@ public class ReviewedLines {
         throws BadRequestException {
       if (input == null || input.line == null || input.line < 1) {
         throw new BadRequestException("line is required (1-based)");
+      }
+      if (input.status != null && input.status != ReviewStatus.READ) {
+        throw new BadRequestException("only READ may be set when marking a line reviewed");
       }
       boolean updated =
           accountPatchLineReviewStore.call(

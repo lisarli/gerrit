@@ -25,6 +25,12 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for MariaDB.
+ *
+ * <p>Same schema shape and duplicate-key handling as {@link MysqlAccountPatchLineReviewStore}
+ * (short {@code file_name}, MySQL-compatible error codes).
+ */
 @Singleton
 public class MariaDBAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
@@ -51,6 +57,12 @@ public class MariaDBAccountPatchLineReviewStore extends JdbcAccountPatchLineRevi
     }
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Uses the same shortened {@code file_name} as {@link MysqlAccountPatchLineReviewStore} so the
+   * composite primary key stays within engine index size limits.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(
@@ -65,6 +77,8 @@ public class MariaDBAccountPatchLineReviewStore extends JdbcAccountPatchLineRevi
             + "start_char INTEGER DEFAULT 0 NOT NULL, "
             + "end_line INTEGER DEFAULT 1 NOT NULL, "
             + "end_char INTEGER DEFAULT 0 NOT NULL, "
+            + "review_status SMALLINT DEFAULT 0 NOT NULL, "
+            + "tentative_carryover BOOLEAN DEFAULT FALSE NOT NULL, "
             + "CONSTRAINT primary_key_account_patch_line_reviews "
             + "PRIMARY KEY (change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)"

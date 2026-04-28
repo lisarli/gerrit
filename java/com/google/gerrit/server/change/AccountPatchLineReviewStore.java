@@ -16,12 +16,13 @@ package com.google.gerrit.server.change;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
-import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.restapi.NotImplementedException;
 import java.sql.Timestamp;
@@ -114,6 +115,9 @@ public interface AccountPatchLineReviewStore {
 
     public abstract int endChar();
 
+    /** Stored status; {@link ReviewStatus#UNREAD} does not appear. */
+    public abstract ReviewStatus reviewStatus();
+
     public static ReviewedLine create(
         String path,
         int lineNumber,
@@ -121,9 +125,10 @@ public interface AccountPatchLineReviewStore {
         int startLine,
         int startChar,
         int endLine,
-        int endChar) {
+        int endChar,
+        ReviewStatus reviewStatus) {
       return new AutoValue_AccountPatchLineReviewStore_ReviewedLine(
-          path, lineNumber, side, startLine, startChar, endLine, endChar);
+          path, lineNumber, side, startLine, startChar, endLine, endChar, reviewStatus);
     }
 
     public Side getSide() {
@@ -217,6 +222,31 @@ public interface AccountPatchLineReviewStore {
   Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path);
 
+  /**
+   * Accounts that have at least one line review row stored for the given patch set.
+   *
+   * @param psId patch set ID
+   */
+  default ImmutableSet<Account.Id> accountsWithLineReviews(PatchSet.Id psId) {
+    throw new NotImplementedException(
+        "accountsWithLineReviews() is not implemented for this AccountPatchLineReviewStore.");
+  }
+
+  /**
+   * Inserts {@link ReviewStatus#TENTATIVELY_READ} rows with {@code tentative_carryover = true} for
+   * markers carried from a prior patch set by {@link LineReviewPropagation}. Skips a row if the
+   * primary key already exists.
+   *
+   * @param psId new patch set ID
+   * @param accountId account ID
+   * @param lines geometry and side for each marker; {@link ReviewedLine#reviewStatus()} is ignored
+   */
+  default void insertPropagatedTentativeReviews(
+      PatchSet.Id psId, Account.Id accountId, Collection<ReviewedLine> lines) {
+    throw new NotImplementedException(
+        "insertPropagatedTentativeReviews() is not implemented for this"
+            + " AccountPatchLineReviewStore.");
+  }
   /**
    * Finds all reviewed lines/regions for the given patch set and file across all users.
    *
