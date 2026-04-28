@@ -161,6 +161,7 @@ public class ChangeRestApiModule extends RestApiModule {
     get(FILE_KIND, "reviewed_lines").to(ReviewedLines.GetReviewedLines.class);
     put(FILE_KIND, "reviewed_lines").to(ReviewedLines.PutReviewedLine.class);
     delete(FILE_KIND, "reviewed_lines").to(ReviewedLines.DeleteReviewedLine.class);
+    get(FILE_KIND, "all_reviewed_lines").to(ReviewedLines.GetAllReviewedLines.class);
     get(FILE_KIND, "line_review_progress").to(GetFileLineReviewProgress.class);
 
     child(REVISION_KIND, "fixes").to(Fixes.class);
@@ -188,6 +189,7 @@ public class ChangeRestApiModule extends RestApiModule {
     post(REVISION_KIND, "test.submit_rule").to(TestSubmitRule.class);
     post(REVISION_KIND, "test.submit_type").to(TestSubmitType.class);
 
+    get(CHANGE_KIND, "reviewed_line_history").to(GetLineReviewHistory.class);
     get(CHANGE_KIND, "robotcomments").to(ListChangeRobotComments.class);
     delete(CHANGE_KIND, "topic").to(PutTopic.class);
     get(CHANGE_KIND, "topic").to(GetTopic.class);

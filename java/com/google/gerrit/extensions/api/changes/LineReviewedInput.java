@@ -36,6 +36,10 @@ public class LineReviewedInput {
 
   /**
    * Review status of the line or region.
+   *
+   * <p>Clients should send {@link ReviewStatus#READ} when marking reviewed. Server-side
+   * propagation may later surface {@link ReviewStatus#TENTATIVELY_READ} for unchanged carryover in
+   * newer patch sets.
    */
   public ReviewStatus status;
 }

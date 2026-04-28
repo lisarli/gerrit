@@ -35,7 +35,10 @@ public class LineReviewedInfo {
   public Side side;
 
   /**
-   * Review status of the line or region. 
+   * Review status of the line or region.
+   *
+   * <p>Returned as READ for explicit review actions and TENTATIVELY_READ for propagated carryover
+   * from unchanged regions in prior patch sets.
    */
   public ReviewStatus status;
 }

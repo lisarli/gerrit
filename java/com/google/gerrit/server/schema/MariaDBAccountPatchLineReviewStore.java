@@ -25,6 +25,12 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for MariaDB.
+ *
+ * <p>Same schema shape and duplicate-key handling as {@link MysqlAccountPatchLineReviewStore}
+ * (short {@code file_name}, MySQL-compatible error codes).
+ */
 @Singleton
 public class MariaDBAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
@@ -51,6 +57,12 @@ public class MariaDBAccountPatchLineReviewStore extends JdbcAccountPatchLineRevi
     }
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Uses the same shortened {@code file_name} as {@link MysqlAccountPatchLineReviewStore} so the
+   * composite primary key stays within engine index size limits.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(

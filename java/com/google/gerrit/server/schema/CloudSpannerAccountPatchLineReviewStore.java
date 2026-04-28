@@ -14,21 +14,35 @@
 
 package com.google.gerrit.server.schema;
 
+import com.google.gerrit.entities.Account;
+import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.exceptions.DuplicateKeyException;
 import com.google.gerrit.exceptions.StorageException;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewAction;
 import com.google.gerrit.server.config.GerritServerConfig;
 import com.google.gerrit.server.config.SitePaths;
 import com.google.gerrit.server.config.ThreadSettingsConfig;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
+import java.util.UUID;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for Cloud Spanner via the Spanner JDBC driver.
+ *
+ * <p>DDL uses Spanner types ({@code INT64}, {@code STRING(MAX)}, {@code BOOL}) with the same logical
+ * columns as other dialects. {@link #convertError} maps JDBC error code {@value #ERR_DUP_KEY}
+ * (Spanner duplicate key / already exists) to {@link DuplicateKeyException}.
+ */
 @Singleton
 public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
+  /** Spanner JDBC driver: duplicate primary key or unique index violation. */
   private static final int ERR_DUP_KEY = 6;
 
   @Inject
@@ -47,6 +61,12 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
     };
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Uses Spanner column types; semantics match {@link JdbcAccountPatchLineReviewStore} defaults
+   * for review status and tentative carryover across patch sets.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(
@@ -65,5 +85,63 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
             + "tentative_carryover BOOL NOT NULL DEFAULT (FALSE)"
             + ") PRIMARY KEY(change_id, patch_set_id, account_id, file_name, line_number, side, "
             + "start_line, start_char, end_line, end_char)");
+  }
+
+  @Override
+  protected void insertHistoryEntry(
+      Connection con,
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int lineNumber,
+      short side,
+      int startLine,
+      int startChar,
+      int endLine,
+      int endChar,
+      LineReviewAction action)
+      throws SQLException {
+    try (PreparedStatement stmt =
+        con.prepareStatement(
+            "INSERT INTO account_patch_line_review_history "
+                + "(id, account_id, change_id, patch_set_id, file_name, line_number, side, "
+                + "start_line, start_char, end_line, end_char, action, created_on) "
+                + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
+      stmt.setString(1, UUID.randomUUID().toString());
+      stmt.setInt(2, accountId.get());
+      stmt.setInt(3, psId.changeId().get());
+      stmt.setInt(4, psId.get());
+      stmt.setString(5, path);
+      stmt.setInt(6, lineNumber);
+      stmt.setShort(7, side);
+      stmt.setInt(8, startLine);
+      stmt.setInt(9, startChar);
+      stmt.setInt(10, endLine);
+      stmt.setInt(11, endChar);
+      stmt.setString(12, action.name());
+      stmt.setTimestamp(13, new Timestamp(System.currentTimeMillis()));
+      stmt.executeUpdate();
+    }
+  }
+
+  @Override
+  protected void doCreateHistoryTable(Statement stmt) throws SQLException {
+    // Spanner does not support auto-increment; use a UUID string as the primary key.
+    stmt.executeUpdate(
+        "CREATE TABLE IF NOT EXISTS account_patch_line_review_history ("
+            + "id STRING(36) NOT NULL,"
+            + "account_id INT64 NOT NULL DEFAULT (0),"
+            + "change_id INT64 NOT NULL DEFAULT (0),"
+            + "patch_set_id INT64 NOT NULL DEFAULT (0),"
+            + "file_name STRING(MAX) NOT NULL DEFAULT (''),"
+            + "line_number INT64 NOT NULL DEFAULT (1),"
+            + "side INT64 NOT NULL DEFAULT (1),"
+            + "start_line INT64 NOT NULL DEFAULT (1),"
+            + "start_char INT64 NOT NULL DEFAULT (0),"
+            + "end_line INT64 NOT NULL DEFAULT (1),"
+            + "end_char INT64 NOT NULL DEFAULT (0),"
+            + "action STRING(10) NOT NULL DEFAULT ('MARKED'),"
+            + "created_on TIMESTAMP NOT NULL"
+            + ") PRIMARY KEY(id)");
   }
 }

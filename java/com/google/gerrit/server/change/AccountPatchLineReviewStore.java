@@ -17,6 +17,7 @@ package com.google.gerrit.server.change;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -24,6 +25,7 @@ import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.restapi.NotImplementedException;
+import java.sql.Timestamp;
 import java.util.Collection;
 import java.util.Optional;
 
@@ -38,6 +40,60 @@ import java.util.Optional;
  * primary servers.
  */
 public interface AccountPatchLineReviewStore {
+
+  /** Whether a line was marked or unmarked in a history entry. */
+  enum LineReviewAction {
+    MARKED,
+    UNMARKED
+  }
+
+  /** A single entry in the line review history for a user. */
+  @AutoValue
+  abstract class LineReviewHistoryEntry {
+    public abstract PatchSet.Id patchSetId();
+
+    public abstract Account.Id accountId();
+
+    public abstract String path();
+
+    public abstract int lineNumber();
+
+    public abstract short side();
+
+    public abstract int startLine();
+
+    public abstract int startChar();
+
+    public abstract int endLine();
+
+    public abstract int endChar();
+
+    public abstract LineReviewAction action();
+
+    public abstract Timestamp createdOn();
+
+    public static LineReviewHistoryEntry create(
+        PatchSet.Id patchSetId,
+        Account.Id accountId,
+        String path,
+        int lineNumber,
+        short side,
+        int startLine,
+        int startChar,
+        int endLine,
+        int endChar,
+        LineReviewAction action,
+        Timestamp createdOn) {
+      return new AutoValue_AccountPatchLineReviewStore_LineReviewHistoryEntry(
+          patchSetId, accountId, path, lineNumber, side, startLine, startChar, endLine, endChar,
+          action, createdOn);
+    }
+
+    public Side getSide() {
+      Side s = Side.fromShort(side());
+      return s != null ? s : Side.REVISION;
+    }
+  }
 
   /** Describes a single reviewed line or region within a file. */
   @AutoValue
@@ -181,7 +237,8 @@ public interface AccountPatchLineReviewStore {
 
   /**
    * Inserts {@link ReviewStatus#TENTATIVELY_READ} rows with {@code tentative_carryover = true} for
-   * markers carried from a prior patch set. Skips a row if the primary key already exists.
+   * markers carried from a prior patch set by {@link LineReviewPropagation}. Skips a row if the
+   * primary key already exists.
    *
    * @param psId new patch set ID
    * @param accountId account ID
@@ -192,5 +249,43 @@ public interface AccountPatchLineReviewStore {
     throw new NotImplementedException(
         "insertPropagatedTentativeReviews() is not implemented for this"
             + " AccountPatchLineReviewStore.");
+  }
+  /**
+   * Finds all reviewed lines/regions for the given patch set and file across all users.
+   *
+   * @param psId patch set ID
+   * @param path file path to filter by (required)
+   * @return map of account ID to list of reviewed lines/regions for that account
+   */
+  default ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    throw new NotImplementedException(
+        "findAllReviewedLines() is not implemented for this AccountPatchLineReviewStore.");
+  }
+
+  /**
+   * Logs a mark or unmark action for the given user to the history table. Called after a successful
+   * {@link #markLineReviewed} or {@link #clearLineReviewed}. History is best-effort.
+   */
+  default void logLineReviewAction(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      LineReviewedInput input,
+      LineReviewAction action) {
+    throw new NotImplementedException(
+        "logLineReviewAction() is not implemented for this AccountPatchLineReviewStore.");
+  }
+
+  /**
+   * Returns the full unified history of mark/unmark actions for the given change across all users,
+   * ordered chronologically (oldest first).
+   *
+   * @param changeId change ID
+   * @return list of history entries
+   */
+  default ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
+    throw new NotImplementedException(
+        "findLineReviewHistory() is not implemented for this AccountPatchLineReviewStore.");
   }
 }
