@@ -190,29 +190,49 @@ public class FakeAccountPatchLineReviewStore
    * Inserts {@link ReviewStatus#READ} or upgrades {@link ReviewStatus#TENTATIVELY_READ} to {@code
    * READ}, preserving {@code tentativeCarryover}. Returns whether the store changed.
    */
-  @Override
-  public boolean markLineReviewed(
-      PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
-    Side side = input.side != null ? input.side : Side.REVISION;
-    short sideShort = side == Side.PARENT ? (short) 0 : (short) 1;
-    int[] lineNumber = new int[1];
-    int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
-    normalize(input, lineNumber, startLine, startChar, endLine, endChar);
+@Override
+public boolean markLineReviewed(
+    PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
+  Side side = input.side != null ? input.side : Side.REVISION;
+  short sideShort = side == Side.PARENT ? (short) 0 : (short) 1;
+  int[] lineNumber = new int[1];
+  int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
+  normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
-    boolean added;
-    synchronized (store) {
-      Optional<LineEntity> existing =
-          findEntity(
-              psId,
-              accountId,
-              path,
-              lineNumber[0],
-              sideShort,
-              startLine[0],
-              startChar[0],
-              endLine[0],
-              endChar[0]);
-      if (existing.isEmpty()) {
+  boolean added;
+  synchronized (store) {
+    Optional<LineEntity> existing =
+        findEntity(
+            psId,
+            accountId,
+            path,
+            lineNumber[0],
+            sideShort,
+            startLine[0],
+            startChar[0],
+            endLine[0],
+            endChar[0]);
+    if (existing.isEmpty()) {
+      added =
+          store.add(
+              LineEntity.create(
+                  psId,
+                  accountId,
+                  path,
+                  lineNumber[0],
+                  sideShort,
+                  startLine[0],
+                  startChar[0],
+                  endLine[0],
+                  endChar[0],
+                  ReviewStatus.READ,
+                  false));
+    } else {
+      LineEntity e = existing.get();
+      if (e.reviewStatus() == ReviewStatus.READ) {
+        added = false;
+      } else if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
+        store.remove(e);
         added =
             store.add(
                 LineEntity.create(
@@ -226,43 +246,32 @@ public class FakeAccountPatchLineReviewStore
                     endLine[0],
                     endChar[0],
                     ReviewStatus.READ,
-                    false));
+                    e.tentativeCarryover()));
       } else {
-        LineEntity e = existing.get();
-        if (e.reviewStatus() == ReviewStatus.READ) {
-          added = false;
-        } else if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
-          store.remove(e);
-          added =
-              store.add(
-                  LineEntity.create(
-                      psId,
-                      accountId,
-                      path,
-                      lineNumber[0],
-                      sideShort,
-                      startLine[0],
-                      startChar[0],
-                      endLine[0],
-                      endChar[0],
-                      ReviewStatus.READ,
-                      e.tentativeCarryover()));
-        } else {
-          added = false;
-        }
+        added = false;
       }
     }
-    if (added) {
-      synchronized (history) {
-        history.add(
-            LineReviewHistoryEntry.create(
-                psId, accountId, path, lineNumber[0], sideShort,
-                startLine[0], startChar[0], endLine[0], endChar[0],
-                LineReviewAction.MARKED, new Timestamp(System.currentTimeMillis())));
-      }
-    }
-    return added;
   }
+
+  if (added) {
+    synchronized (history) {
+      history.add(
+          LineReviewHistoryEntry.create(
+              psId,
+              accountId,
+              path,
+              lineNumber[0],
+              sideShort,
+              startLine[0],
+              startChar[0],
+              endLine[0],
+              endChar[0],
+              LineReviewAction.MARKED,
+              new Timestamp(System.currentTimeMillis())));
+    }
+  }
+  return added;
+}
 
   /** Delegates to {@link #markLineReviewed(PatchSet.Id, Account.Id, String, LineReviewedInput)} per input. */
   @Override

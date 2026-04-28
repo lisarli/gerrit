@@ -56,6 +56,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import com.google.common.annotations.VisibleForTesting;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
@@ -592,6 +593,7 @@ public abstract class JdbcAccountPatchLineReviewStore
                 endLine[0],
                 endChar[0]);
         con.commit();
+
         if (changed) {
           try {
             insertHistoryEntry(
@@ -649,8 +651,10 @@ public abstract class JdbcAccountPatchLineReviewStore
         if (!rs.next()) {
           return false;
         }
+
         ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
         boolean carry = rs.getBoolean(2);
+
         if (current == ReviewStatus.READ && carry) {
           try (PreparedStatement upd =
               con.prepareStatement(
@@ -660,18 +664,38 @@ public abstract class JdbcAccountPatchLineReviewStore
                       + "AND end_line = ? AND end_char = ?")) {
             upd.setShort(1, ReviewStatus.TENTATIVELY_READ.toDbValue());
             bindLineGeometry(
-                upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
-            upd.executeUpdate();
+                upd,
+                2,
+                accountId,
+                psId,
+                path,
+                lineNumber,
+                side,
+                startLine,
+                startChar,
+                endLine,
+                endChar);
+            return upd.executeUpdate() > 0;
           }
-          return true;
         }
+
         try (PreparedStatement del =
             con.prepareStatement(
                 "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
                     + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
                     + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
           bindLineGeometry(
-              del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+              del,
+              1,
+              accountId,
+              psId,
+              path,
+              lineNumber,
+              side,
+              startLine,
+              startChar,
+              endLine,
+              endChar);
           return del.executeUpdate() > 0;
         }
       }
