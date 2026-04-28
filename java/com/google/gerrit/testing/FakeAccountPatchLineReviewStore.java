@@ -283,7 +283,10 @@ public boolean markLineReviewed(
     if (inputs == null || inputs.isEmpty()) {
       return;
     }
-    inputs.forEach(input -> markLineReviewed(psId, accountId, path, input));
+    inputs.forEach(
+        input -> {
+          var unused = markLineReviewed(psId, accountId, path, input);
+        });
   }
 
   /**
@@ -331,7 +334,6 @@ public boolean markLineReviewed(
                 endChar[0],
                 ReviewStatus.TENTATIVELY_READ,
                 true));
-      removed = store.remove(entity);
       }
       changed = true;
     }
