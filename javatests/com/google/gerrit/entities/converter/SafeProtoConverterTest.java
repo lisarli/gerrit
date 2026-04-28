@@ -87,9 +87,14 @@ public class SafeProtoConverterTest {
           .filter(SafeProtoConverter.class::isAssignableFrom)
           .filter(clz -> !SafeProtoConverter.class.equals(clz))
           .filter(Class::isEnum)
-          .map(clz -> (SafeProtoConverter<Message, Object>) clz.getEnumConstants()[0])
+          .map(PerTypeSafeProtoConverterTest::firstConverterEnumConstant)
           .map(clz -> new Object[] {clz, clz.getClass().getSimpleName()})
           .collect(toImmutableList());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static SafeProtoConverter<Message, Object> firstConverterEnumConstant(Class<?> clz) {
+      return (SafeProtoConverter<Message, Object>) clz.getEnumConstants()[0];
     }
 
     /**

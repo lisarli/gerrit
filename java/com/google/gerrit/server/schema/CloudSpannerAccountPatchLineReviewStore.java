@@ -32,9 +32,17 @@ import java.sql.Timestamp;
 import java.util.UUID;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for Cloud Spanner via the Spanner JDBC driver.
+ *
+ * <p>DDL uses Spanner types ({@code INT64}, {@code STRING(MAX)}, {@code BOOL}) with the same logical
+ * columns as other dialects. {@link #convertError} maps JDBC error code {@value #ERR_DUP_KEY}
+ * (Spanner duplicate key / already exists) to {@link DuplicateKeyException}.
+ */
 @Singleton
 public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 
+  /** Spanner JDBC driver: duplicate primary key or unique index violation. */
   private static final int ERR_DUP_KEY = 6;
 
   @Inject
@@ -53,6 +61,12 @@ public class CloudSpannerAccountPatchLineReviewStore extends JdbcAccountPatchLin
     };
   }
 
+  /**
+   * {@inheritDoc}
+   *
+   * <p>Uses Spanner column types; semantics match {@link JdbcAccountPatchLineReviewStore} defaults
+   * for review status and tentative carryover across patch sets.
+   */
   @Override
   protected void doCreateTable(Statement stmt) throws SQLException {
     stmt.executeUpdate(

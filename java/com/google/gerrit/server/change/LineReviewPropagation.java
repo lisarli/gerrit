@@ -107,6 +107,7 @@ public class LineReviewPropagation {
     }
     PatchSet.Id priorId = priorPatchSet.id();
     PatchSet.Id newId = newPatchSet.id();
+    // Side 1 = REVISION in stored rows; parent-side markers are not ported.
     short revisionSide = 1;
 
     ObjectId oldCommit =
@@ -121,6 +122,7 @@ public class LineReviewPropagation {
       return;
     }
 
+    // One mapping per modified file: line/column shifts from oldCommit to newCommit.
     ImmutableSet<Mapping> mappings = loadCommitMappings(change.getProject(), oldCommit, newCommit);
 
     for (com.google.gerrit.entities.Account.Id accountId : store.accountsWithLineReviews(priorId)) {
@@ -138,6 +140,9 @@ public class LineReviewPropagation {
         continue;
       }
 
+      // Only markers that can be mapped onto unchanged/new positions are carried forward. The
+      // carried rows are stored as TENTATIVELY_READ so users can quickly spot what was likely
+      // already reviewed while still distinguishing it from an explicit READ on this patch set.
       ImmutableList<PositionedEntity<ReviewedLine>> positioned =
           revisionLines.stream().map(this::toPositionedEntity).collect(toImmutableList());
       ImmutableSet<ReviewedLine> propagated =
@@ -147,11 +152,13 @@ public class LineReviewPropagation {
               .collect(toImmutableSet());
 
       if (!propagated.isEmpty()) {
+        // dedupe avoids duplicate inserts from transform overlap.
         store.insertPropagatedTentativeReviews(newId, accountId, dedupe(propagated));
       }
     }
   }
 
+  /** Collapses multiple {@link ReviewedLine} rows that landed on identical geometry after mapping. */
   private ImmutableList<ReviewedLine> dedupe(ImmutableSet<ReviewedLine> lines) {
     Set<String> seen = new HashSet<>();
     ImmutableList.Builder<ReviewedLine> b = ImmutableList.builder();
@@ -177,6 +184,10 @@ public class LineReviewPropagation {
     return b.build();
   }
 
+  /**
+   * Builds position mappings between two revision commits so {@link GitPositionTransformer} can
+   * move each marker from {@code from} to {@code to}.
+   */
   private ImmutableSet<Mapping> loadCommitMappings(
       com.google.gerrit.entities.Project.NameKey project, ObjectId from, ObjectId to)
       throws DiffNotAvailableException {
@@ -192,6 +203,7 @@ public class LineReviewPropagation {
         .collect(toImmutableSet());
   }
 
+  /** Converts unified diff output into the edit list format expected by {@link DiffMappings}. */
   private static FileEdits getFileEdits(FileDiffOutput fileDiffOutput) {
     return FileEdits.create(
         fileDiffOutput.edits().stream().map(TaggedEdit::edit).collect(toImmutableList()),
@@ -199,6 +211,10 @@ public class LineReviewPropagation {
         fileDiffOutput.newPath());
   }
 
+  /**
+   * Wraps a stored marker so the transformer can read its old-file position and materialize a new
+   * {@link ReviewedLine} via {@link #createReviewedLineAtNewPosition}.
+   */
   private PositionedEntity<ReviewedLine> toPositionedEntity(ReviewedLine line) {
     return PositionedEntity.create(
         line,
@@ -206,6 +222,7 @@ public class LineReviewPropagation {
         LineReviewPropagation::createReviewedLineAtNewPosition);
   }
 
+  /** File path plus 0-based line range (see {@link #extractLineRange}) for the transformer. */
   private static Position extractPosition(ReviewedLine line) {
     Position.Builder positionBuilder = Position.builder();
     positionBuilder.filePath(line.path());
@@ -224,15 +241,27 @@ public class LineReviewPropagation {
             || line.startChar() > 0
             || line.endChar() > 0;
     if (hasExplicitRange) {
+      // Multi-line or intra-line character span: map to 0-based half-open [start, end) line range.
+      // When the region ends with characters on the last line, the exclusive end line stays at
+      // endLine; when it ends at end-of-line without trailing chars, the transformer uses one line
+      // less for the exclusive end (matches comment porting).
       int exclusiveEndLine =
           line.endChar() > 0 ? line.endLine() : line.endLine() - 1;
       return Optional.of(
           GitPositionTransformer.Range.create(line.startLine() - 1, exclusiveEndLine));
     }
+    // Single-line point marker: half-open range [line-1, line) in 0-based indices.
     return Optional.of(
         GitPositionTransformer.Range.create(line.lineNumber() - 1, line.lineNumber()));
   }
 
+  /**
+   * Builds the {@link ReviewedLine} row for the new commit after the transformer mapped {@code orig}
+   * to {@code newPosition}.
+   *
+   * <p>Returns {@code null} if the region could not be placed (e.g. deleted hunk); those markers
+   * are dropped rather than stored at a bogus line.
+   */
   @Nullable
   private static ReviewedLine createReviewedLineAtNewPosition(
       ReviewedLine orig, Position newPosition) {
@@ -245,6 +274,12 @@ public class LineReviewPropagation {
     boolean hasCharRange = orig.startChar() > 0 || orig.endChar() > 0;
     boolean multiLine = orig.startLine() != orig.endLine();
     if (hasCharRange || multiLine) {
+      // Geometry: keep the same start/end character columns from the prior patch set so the stored
+      // region still describes a sub-line or multi-line span after mapping. Line numbers come from
+      // the mapped range (lr); adjustedEndLine reconciles 0-based lr.end() with 1-based ReviewedLine
+      // endLine when the original range ended at EOL without trailing characters.
+      //
+      // Status: always TENTATIVELY_READ. 
       int adjustedEndLine = orig.endChar() > 0 ? lr.end() : lr.end() + 1;
       return ReviewedLine.create(
           path,
@@ -256,6 +291,7 @@ public class LineReviewPropagation {
           orig.endChar(),
           ReviewStatus.TENTATIVELY_READ);
     }
+    // Simple single-line marker: anchor line is lr start (1-based); no character span.
     int line1 = lr.start() + 1;
     return ReviewedLine.create(
         path, line1, side, line1, 0, line1, 0, ReviewStatus.TENTATIVELY_READ);

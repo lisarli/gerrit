@@ -26,6 +26,14 @@ import java.sql.SQLException;
 import javax.sql.DataSource;
 import org.eclipse.jgit.lib.Config;
 
+/**
+ * {@link JdbcAccountPatchLineReviewStore} for H2 (default on-disk site DB or explicit {@code
+ * jdbc:h2:...} URL).
+ *
+ * <p>{@link #convertError} maps SQLSTATE {@code 23001}/{@code 23505} to {@link DuplicateKeyException}
+ * so {@link com.google.gerrit.server.change.LineReviewPropagation} can treat a duplicate row as a
+ * benign skip when inserting carried-over tentative markers.
+ */
 @Singleton
 public class H2AccountPatchLineReviewStore extends JdbcAccountPatchLineReviewStore {
 

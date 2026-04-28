@@ -588,6 +588,8 @@ public class ReplaceOp implements BatchUpdateOp {
     if (newPatchSet != null && rejectionReason == null) {
       PatchSet priorPs = notes.getPatchSets().get(priorPatchSetId);
       if (priorPs != null) {
+        // Mirror the PatchSetInserter path: when a replacement patch set is pushed, propagate
+        // mapped line/region markers as TENTATIVELY_READ carryover for unchanged regions.
         lineReviewPropagation.propagateOnNewPatchSet(notes.getChange(), priorPs, newPatchSet);
       }
     }

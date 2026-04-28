@@ -237,7 +237,8 @@ public interface AccountPatchLineReviewStore {
 
   /**
    * Inserts {@link ReviewStatus#TENTATIVELY_READ} rows with {@code tentative_carryover = true} for
-   * markers carried from a prior patch set. Skips a row if the primary key already exists.
+   * markers carried from a prior patch set by {@link LineReviewPropagation}. Skips a row if the
+   * primary key already exists.
    *
    * @param psId new patch set ID
    * @param accountId account ID
@@ -248,6 +249,8 @@ public interface AccountPatchLineReviewStore {
     throw new NotImplementedException(
         "insertPropagatedTentativeReviews() is not implemented for this"
             + " AccountPatchLineReviewStore.");
+  }
+  /**
    * Finds all reviewed lines/regions for the given patch set and file across all users.
    *
    * @param psId patch set ID

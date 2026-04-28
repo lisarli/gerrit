@@ -18,7 +18,9 @@ import static com.google.common.truth.Truth.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyShort;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -41,6 +43,7 @@ import com.google.gerrit.server.patch.DiffOptions;
 import com.google.gerrit.server.patch.filediff.Edit;
 import com.google.gerrit.server.patch.filediff.FileDiffOutput;
 import com.google.gerrit.server.patch.filediff.TaggedEdit;
+import com.google.gerrit.server.plugincontext.PluginContext.ExtensionImplConsumer;
 import com.google.gerrit.server.plugincontext.PluginItemContext;
 import java.time.Instant;
 import java.util.Collection;
@@ -142,6 +145,7 @@ public class LineReviewPropagationTest {
     verify(store).insertPropagatedTentativeReviews(eq(PS2), eq(ACCOUNT_ID), captor.capture());
     assertThat(captor.getValue()).hasSize(1);
     ReviewedLine propagated = captor.getValue().iterator().next();
+    // Geometry is remapped (5 -> 7) but status is downgraded to TENTATIVELY_READ on carryover.
     assertThat(propagated.path()).isEqualTo(FILE);
     assertThat(propagated.lineNumber()).isEqualTo(7);
     assertThat(propagated.reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
@@ -191,6 +195,214 @@ public class LineReviewPropagationTest {
     propagation.propagate(store, change, patchSet1, patchSet2);
 
     verify(store, never()).insertPropagatedTentativeReviews(any(), any(), any());
+  }
+
+  @Test
+  public void skipsWhenPatchSetsBelongToDifferentChanges() throws Exception {
+    PatchSet.Id otherPsId = PatchSet.id(Change.id(2), 2);
+    PatchSet otherPatchSet =
+        PatchSet.builder()
+            .id(otherPsId)
+            .commitId(NEW_COMMIT)
+            .uploader(Account.id(7))
+            .realUploader(Account.id(7))
+            .createdOn(Instant.now())
+            .build();
+
+    propagation.propagate(store, change, patchSet1, otherPatchSet);
+
+    verify(commentsUtil, never()).determineCommitId(any(), any(), anyShort());
+    verify(store, never()).accountsWithLineReviews(any());
+  }
+
+  @Test
+  public void skipsAccountWithoutPriorReviewedLines() throws Exception {
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null)).thenReturn(Optional.empty());
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(ImmutableMap.of());
+
+    propagation.propagate(store, change, patchSet1, patchSet2);
+
+    verify(store, never()).insertPropagatedTentativeReviews(any(), any(), any());
+  }
+
+  @Test
+  public void skipsUnreadMarkers() throws Exception {
+    ReviewedLine unread =
+        ReviewedLine.create(FILE, 6, (short) 1, 6, 0, 6, 0, ReviewStatus.UNREAD);
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null))
+        .thenReturn(Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(unread))));
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(ImmutableMap.of());
+
+    propagation.propagate(store, change, patchSet1, patchSet2);
+
+    verify(store, never()).insertPropagatedTentativeReviews(any(), any(), any());
+  }
+
+  @Test
+  public void propagatesRangeMarkerKeepingCharacterGeometry() throws Exception {
+    ReviewedLine range =
+        ReviewedLine.create(
+            FILE,
+            12,
+            (short) 1,
+            10,
+            2,
+            12,
+            5,
+            ReviewStatus.READ);
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null))
+        .thenReturn(Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(range))));
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(
+            ImmutableMap.of(
+                FILE,
+                modifiedDiff(
+                    FILE,
+                    FILE,
+                    ImmutableList.of(
+                        // Insert two lines above the range start and end.
+                        TaggedEdit.create(Edit.create(0, 0, 0, 2), false)))));
+
+    propagation.propagate(store, change, patchSet1, patchSet2);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Collection<ReviewedLine>> captor =
+        (ArgumentCaptor<Collection<ReviewedLine>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(Collection.class);
+    verify(store, times(1)).insertPropagatedTentativeReviews(eq(PS2), eq(ACCOUNT_ID), captor.capture());
+    ReviewedLine propagated = captor.getValue().iterator().next();
+    assertThat(propagated.startLine()).isEqualTo(12);
+    assertThat(propagated.endLine()).isEqualTo(14);
+    assertThat(propagated.startChar()).isEqualTo(2);
+    assertThat(propagated.endChar()).isEqualTo(5);
+    assertThat(propagated.lineNumber()).isEqualTo(14);
+    assertThat(propagated.reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void propagateOnNewPatchSet_runsInsidePluginContext() throws Exception {
+    ReviewedLine reviewed = ReviewedLine.create(FILE, 5, (short) 1, 5, 0, 5, 0, ReviewStatus.READ);
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null))
+        .thenReturn(Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(reviewed))));
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(
+            ImmutableMap.of(
+                FILE,
+                modifiedDiff(
+                    FILE,
+                    FILE,
+                    ImmutableList.of(TaggedEdit.create(Edit.create(0, 0, 0, 1), false)))));
+    doAnswer(
+            invocation -> {
+              ExtensionImplConsumer<AccountPatchLineReviewStore> callback = invocation.getArgument(0);
+              callback.run(store);
+              return null;
+            })
+        .when(pluginItemContext)
+        .run(any());
+
+    propagation.propagateOnNewPatchSet(change, patchSet1, patchSet2);
+
+    verify(pluginItemContext, times(1)).run(any());
+    verify(store, times(1)).insertPropagatedTentativeReviews(any(), any(), any());
+  }
+
+  @Test
+  public void propagateOnNewPatchSet_swallowsPluginContextException() throws Exception {
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenThrow(new RuntimeException("boom"));
+    doAnswer(
+            invocation -> {
+              ExtensionImplConsumer<AccountPatchLineReviewStore> callback = invocation.getArgument(0);
+              callback.run(store);
+              return null;
+            })
+        .when(pluginItemContext)
+        .run(any());
+
+    propagation.propagateOnNewPatchSet(change, patchSet1, patchSet2);
+
+    verify(pluginItemContext, times(1)).run(any());
+  }
+
+  @Test
+  public void propagatesPerAccountAndSkipsAccountWithoutMappedLines() throws Exception {
+    Account.Id otherAccount = Account.id(1002);
+    ReviewedLine account1Line =
+        ReviewedLine.create(FILE, 5, (short) 1, 5, 0, 5, 0, ReviewStatus.READ);
+    ReviewedLine account2ParentOnly =
+        ReviewedLine.create(FILE, 8, (short) 0, 8, 0, 8, 0, ReviewStatus.READ);
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID, otherAccount));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null))
+        .thenReturn(Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(account1Line))));
+    when(store.findReviewedLines(PS1, otherAccount, null))
+        .thenReturn(Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(account2ParentOnly))));
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(
+            ImmutableMap.of(
+                FILE,
+                modifiedDiff(
+                    FILE,
+                    FILE,
+                    ImmutableList.of(TaggedEdit.create(Edit.create(0, 0, 0, 1), false)))));
+
+    propagation.propagate(store, change, patchSet1, patchSet2);
+
+    verify(store, times(1)).insertPropagatedTentativeReviews(eq(PS2), eq(ACCOUNT_ID), any());
+    verify(store, never()).insertPropagatedTentativeReviews(eq(PS2), eq(otherAccount), any());
+  }
+
+  @Test
+  public void propagatesRangeEndingAtLineBoundary() throws Exception {
+    ReviewedLine rangeAtBoundary =
+        ReviewedLine.create(
+            FILE,
+            12,
+            (short) 1,
+            10,
+            0,
+            12,
+            0,
+            ReviewStatus.READ);
+    when(store.accountsWithLineReviews(PS1)).thenReturn(ImmutableSet.of(ACCOUNT_ID));
+    when(store.findReviewedLines(PS1, ACCOUNT_ID, null))
+        .thenReturn(
+            Optional.of(PatchSetWithReviewedLines.create(PS1, ImmutableList.of(rangeAtBoundary))));
+    when(commentsUtil.determineCommitId(any(), any(), anyShort())).thenAnswer(this::commitForPatchSet);
+    when(diffOperations.listModifiedFiles(any(), any(), any(), any(DiffOptions.class)))
+        .thenReturn(
+            ImmutableMap.of(
+                FILE,
+                modifiedDiff(
+                    FILE,
+                    FILE,
+                    ImmutableList.of(
+                        // shift by two lines
+                        TaggedEdit.create(Edit.create(0, 0, 0, 2), false)))));
+
+    propagation.propagate(store, change, patchSet1, patchSet2);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Collection<ReviewedLine>> captor =
+        (ArgumentCaptor<Collection<ReviewedLine>>) (ArgumentCaptor<?>) ArgumentCaptor.forClass(Collection.class);
+    verify(store).insertPropagatedTentativeReviews(eq(PS2), eq(ACCOUNT_ID), captor.capture());
+    ReviewedLine propagated = captor.getValue().iterator().next();
+    assertThat(propagated.startLine()).isEqualTo(12);
+    assertThat(propagated.endLine()).isEqualTo(14);
+    assertThat(propagated.startChar()).isEqualTo(0);
+    assertThat(propagated.endChar()).isEqualTo(0);
+    assertThat(propagated.lineNumber()).isEqualTo(14);
   }
 
   private static FileDiffOutput modifiedDiff(

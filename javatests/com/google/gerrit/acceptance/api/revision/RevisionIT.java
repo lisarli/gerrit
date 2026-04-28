@@ -1758,10 +1758,145 @@ public class RevisionIT extends AbstractDaemonTest {
     Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
         accountPatchLineReviewStore.findReviewedLines(
             r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    // Carryover is intentionally tentative: unchanged/mapped regions are pre-marked for reviewer
+    // convenience, but still distinguishable from explicit READ in this patch set.
     assertThat(found).isPresent();
     assertThat(found.get().lines()).hasSize(1);
     assertThat(found.get().lines().get(0).lineNumber()).isEqualTo(7);
     assertThat(found.get().lines().get(0).reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void lineReviewsPropagateIndependentlyForMultipleAccounts() throws Exception {
+    TestAccount reviewer2 = accountCreator.user2();
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput adminLine = new LineReviewedInput();
+    adminLine.line = 5;
+    adminLine.side = Side.REVISION;
+    var unused1 =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, adminLine);
+
+    LineReviewedInput reviewer2Line = new LineReviewedInput();
+    reviewer2Line.line = 8;
+    reviewer2Line.side = Side.REVISION;
+    var unused2 =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), reviewer2.id(), PushOneCommit.FILE_NAME, reviewer2Line);
+
+    // Insert one line at the top so line mappings shift by +1.
+    PushOneCommit.Result r2 = updateChange(r1, "new0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> adminFound =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(adminFound).isPresent();
+    assertThat(adminFound.get().lines()).hasSize(1);
+    assertThat(adminFound.get().lines().get(0).lineNumber()).isEqualTo(6);
+    assertThat(adminFound.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> reviewer2Found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), reviewer2.id(), PushOneCommit.FILE_NAME);
+    assertThat(reviewer2Found).isPresent();
+    assertThat(reviewer2Found.get().lines()).hasSize(1);
+    assertThat(reviewer2Found.get().lines().get(0).lineNumber()).isEqualTo(9);
+    assertThat(reviewer2Found.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void lineReviewIsDroppedWhenOriginalLineIsDeleted() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(), testRepo, SUBJECT, PushOneCommit.FILE_NAME, "l1\nl2\nl3\nl4\nl5\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    // Remove the previously reviewed last line from the new patch set.
+    PushOneCommit.Result r2 = updateChange(r1, "l1\nl2\nl3\nl4\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isEmpty();
+  }
+
+  @Test
+  public void parentSideLineReviewIsNotPropagated() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(), testRepo, SUBJECT, PushOneCommit.FILE_NAME, "l1\nl2\nl3\nl4\nl5\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 3;
+    input.side = Side.PARENT;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    PushOneCommit.Result r2 = updateChange(r1, "new0\nl1\nl2\nl3\nl4\nl5\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isEmpty();
+  }
+
+  @Test
+  public void rangedLineReviewPropagatesAsTentative() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 8;
+    input.side = Side.REVISION;
+    com.google.gerrit.extensions.client.Comment.Range range =
+        new com.google.gerrit.extensions.client.Comment.Range();
+    range.startLine = 6;
+    range.startCharacter = 1;
+    range.endLine = 8;
+    range.endCharacter = 4;
+    input.range = range;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isPresent();
+    assertThat(found.get().lines()).hasSize(1);
+    assertThat(found.get().lines().get(0).reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+    assertThat(found.get().lines().get(0).startLine()).isEqualTo(8);
+    assertThat(found.get().lines().get(0).endLine()).isEqualTo(10);
+    assertThat(found.get().lines().get(0).startChar()).isEqualTo(1);
+    assertThat(found.get().lines().get(0).endChar()).isEqualTo(4);
   }
 
   // -- HTTP-level tests for the reviewed_lines REST endpoint --
