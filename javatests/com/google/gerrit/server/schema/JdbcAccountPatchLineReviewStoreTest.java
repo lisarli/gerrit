@@ -26,7 +26,6 @@ import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.Comment.Range;
 import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
-import com.google.common.collect.ImmutableList;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewAction;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewHistoryEntry;
@@ -335,6 +334,8 @@ public class JdbcAccountPatchLineReviewStoreTest {
     store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
 
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, null).get().lines()).hasSize(1);
+  }
+
   // -- tests for findAllReviewedLines --
 
   @Test

@@ -17,6 +17,7 @@ package com.google.gerrit.server.schema;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableMap;
@@ -25,7 +26,6 @@ import com.google.common.primitives.Ints;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
-import com.google.gerrit.exceptions.DuplicateKeyException;
 import com.google.gerrit.exceptions.StorageException;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.ReviewStatus;
@@ -54,10 +54,8 @@ import java.util.HashSet;
 import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import com.google.common.annotations.VisibleForTesting;
 import java.util.Optional;
 import java.util.Set;
-import com.google.common.annotations.VisibleForTesting;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
@@ -405,43 +403,6 @@ public abstract class JdbcAccountPatchLineReviewStore
                     .filePath(path)
                     .build());
         Connection con = ds.getConnection()) {
-        try (PreparedStatement stmt =
-            con.prepareStatement(
-                "INSERT INTO account_patch_line_reviews "
-                    + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
-                    + "start_line, start_char, end_line, end_char) VALUES "
-                    + "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
-          stmt.setInt(1, accountId.get());
-          stmt.setInt(2, psId.changeId().get());
-          stmt.setInt(3, psId.get());
-          stmt.setString(4, path);
-          stmt.setInt(5, lineNumber[0]);
-          stmt.setShort(6, sideToShort(side));
-          stmt.setInt(7, startLine[0]);
-          stmt.setInt(8, startChar[0]);
-          stmt.setInt(9, endLine[0]);
-          stmt.setInt(10, endChar[0]);
-          stmt.executeUpdate();
-        } catch (SQLException e) {
-          StorageException ormException = convertError("insert", e);
-          if (ormException instanceof DuplicateKeyException) {
-            return false; // already marked — do not log
-          }
-          throw ormException;
-        }
-        // Log the mark action (best-effort: don't fail the main operation on history write failure)
-        try {
-          insertHistoryEntry(
-              con, psId, accountId, path, lineNumber[0],
-              sideToShort(side), startLine[0], startChar[0], endLine[0], endChar[0],
-              LineReviewAction.MARKED);
-        } catch (SQLException e) {
-          logger.atWarning().withCause(e).log("Failed to log MARKED action to history");
-        }
-        return true;
-      } catch (SQLException e) {
-        throw convertError("insert", e);
-      }
       boolean prevAutoCommit = con.getAutoCommit();
       // Select-then-insert/update must be atomic so concurrent reviewers do not double-insert.
       con.setAutoCommit(false);
@@ -459,6 +420,24 @@ public abstract class JdbcAccountPatchLineReviewStore
                 endLine[0],
                 endChar[0]);
         con.commit();
+        if (updated) {
+          try {
+            insertHistoryEntry(
+                con,
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                LineReviewAction.MARKED);
+          } catch (SQLException e) {
+            logger.atWarning().withCause(e).log("Failed to log MARKED action to history");
+          }
+        }
         return updated;
       } catch (SQLException e) {
         con.rollback();
@@ -600,52 +579,42 @@ public abstract class JdbcAccountPatchLineReviewStore
       // Select-then-update/delete must be atomic for correct carryover downgrade vs delete.
       con.setAutoCommit(false);
       try {
-        clearLineReviewedInTransaction(
-            con,
-            psId,
-            accountId,
-            path,
-            lineNumber[0],
-            sideShort,
-            startLine[0],
-            startChar[0],
-            endLine[0],
-            endChar[0]);
+        boolean changed =
+            clearLineReviewedInTransaction(
+                con,
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0]);
         con.commit();
+        if (changed) {
+          try {
+            insertHistoryEntry(
+                con,
+                psId,
+                accountId,
+                path,
+                lineNumber[0],
+                sideShort,
+                startLine[0],
+                startChar[0],
+                endLine[0],
+                endChar[0],
+                LineReviewAction.UNMARKED);
+          } catch (SQLException e) {
+            logger.atWarning().withCause(e).log("Failed to log UNMARKED action to history");
+          }
+        }
       } catch (SQLException e) {
         con.rollback();
         throw convertError("clearLineReviewed", e);
       } finally {
         con.setAutoCommit(prevAutoCommit);
-      }
-      int affected;
-      try (PreparedStatement stmt =
-          con.prepareStatement(
-              "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
-                  + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
-                  + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
-        stmt.setInt(1, accountId.get());
-        stmt.setInt(2, psId.changeId().get());
-        stmt.setInt(3, psId.get());
-        stmt.setString(4, path);
-        stmt.setInt(5, lineNumber[0]);
-        stmt.setShort(6, sideToShort(side));
-        stmt.setInt(7, startLine[0]);
-        stmt.setInt(8, startChar[0]);
-        stmt.setInt(9, endLine[0]);
-        stmt.setInt(10, endChar[0]);
-        affected = stmt.executeUpdate();
-      }
-      // Only log if a row was actually deleted (don't log no-ops)
-      if (affected > 0) {
-        try {
-          insertHistoryEntry(
-              con, psId, accountId, path, lineNumber[0],
-              sideToShort(side), startLine[0], startChar[0], endLine[0], endChar[0],
-              LineReviewAction.UNMARKED);
-        } catch (SQLException e) {
-          logger.atWarning().withCause(e).log("Failed to log UNMARKED action to history");
-        }
       }
     } catch (SQLException e) {
       throw convertError("clearLineReviewed", e);
@@ -656,7 +625,7 @@ public abstract class JdbcAccountPatchLineReviewStore
    * If the row is {@link ReviewStatus#READ} with {@code tentative_carryover}, downgrade to {@link
    * ReviewStatus#TENTATIVELY_READ}; otherwise delete the row (unread or dismissing tentative).
    */
-  private void clearLineReviewedInTransaction(
+  private boolean clearLineReviewedInTransaction(
       Connection con,
       PatchSet.Id psId,
       Account.Id accountId,
@@ -678,7 +647,7 @@ public abstract class JdbcAccountPatchLineReviewStore
           sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
       try (ResultSet rs = sel.executeQuery()) {
         if (!rs.next()) {
-          return;
+          return false;
         }
         ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
         boolean carry = rs.getBoolean(2);
@@ -694,16 +663,16 @@ public abstract class JdbcAccountPatchLineReviewStore
                 upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
             upd.executeUpdate();
           }
-        } else {
-          try (PreparedStatement del =
-              con.prepareStatement(
-                  "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
-                      + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
-                      + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
-            bindLineGeometry(
-                del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
-            del.executeUpdate();
-          }
+          return true;
+        }
+        try (PreparedStatement del =
+            con.prepareStatement(
+                "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
+                    + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
+                    + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
+          bindLineGeometry(
+              del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+          return del.executeUpdate() > 0;
         }
       }
     }
@@ -1054,7 +1023,8 @@ public abstract class JdbcAccountPatchLineReviewStore
   /**
    * Maps JDBC failures to Gerrit storage exceptions. This default always wraps as {@link
    * StorageException}; dialect subclasses map unique-violation codes (for example PostgreSQL
-   * {@code SQLSTATE 23505}) to {@link DuplicateKeyException} so concurrent propagation inserts can
+   * {@code SQLSTATE 23505}) to {@link com.google.gerrit.exceptions.DuplicateKeyException} so concurrent
+   * propagation inserts can
    * be treated as idempotent skips.
    */
   public StorageException convertError(String op, SQLException err) {
