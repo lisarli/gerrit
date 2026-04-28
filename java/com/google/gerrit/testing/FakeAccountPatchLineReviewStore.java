@@ -17,6 +17,7 @@ package com.google.gerrit.testing;
 import com.google.auto.value.AutoValue;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
@@ -27,11 +28,16 @@ import com.google.gerrit.extensions.events.LifecycleListener;
 import com.google.gerrit.extensions.registration.DynamicItem;
 import com.google.gerrit.lifecycle.LifecycleModule;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewAction;
+import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewHistoryEntry;
 import com.google.inject.Singleton;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -51,6 +57,7 @@ public class FakeAccountPatchLineReviewStore
 
   /** One entry per distinct reviewed region (same identity fields as the SQL primary key). */
   private final Set<LineEntity> store = new HashSet<>();
+  private final List<LineReviewHistoryEntry> history = new ArrayList<>();
 
   @Override
   public void start() {}
@@ -192,6 +199,18 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
+    LineEntity entity =
+        LineEntity.create(
+            psId,
+            accountId,
+            path,
+            lineNumber[0],
+            sideShort,
+            startLine[0],
+            startChar[0],
+            endLine[0],
+            endChar[0]);
+    boolean added;
     synchronized (store) {
       Optional<LineEntity> existing =
           findEntity(
@@ -240,7 +259,18 @@ public class FakeAccountPatchLineReviewStore
                 e.tentativeCarryover()));
       }
       return false;
+      added = store.add(entity);
     }
+    if (added) {
+      synchronized (history) {
+        history.add(
+            LineReviewHistoryEntry.create(
+                psId, accountId, path, lineNumber[0], sideShort,
+                startLine[0], startChar[0], endLine[0], endChar[0],
+                LineReviewAction.MARKED, new Timestamp(System.currentTimeMillis())));
+      }
+    }
+    return added;
   }
 
   /** Delegates to {@link #markLineReviewed(PatchSet.Id, Account.Id, String, LineReviewedInput)} per input. */
@@ -269,6 +299,11 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
+    LineEntity entity =
+        LineEntity.create(
+            psId, accountId, path, lineNumber[0], sideShort,
+            startLine[0], startChar[0], endLine[0], endChar[0]);
+    boolean removed;
     synchronized (store) {
       Optional<LineEntity> existing =
           findEntity(
@@ -300,6 +335,15 @@ public class FakeAccountPatchLineReviewStore
                 endChar[0],
                 ReviewStatus.TENTATIVELY_READ,
                 true));
+      removed = store.remove(entity);
+    }
+    if (removed) {
+      synchronized (history) {
+        history.add(
+            LineReviewHistoryEntry.create(
+                psId, accountId, path, lineNumber[0], sideShort,
+                startLine[0], startChar[0], endLine[0], endChar[0],
+                LineReviewAction.UNMARKED, new Timestamp(System.currentTimeMillis())));
       }
     }
   }
@@ -402,6 +446,33 @@ public class FakeAccountPatchLineReviewStore
   }
 
   /** Returns all matching lines for the account and patch set, optionally filtered to one path. */
+  public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
+      PatchSet.Id psId, String path) {
+    synchronized (store) {
+      Map<Account.Id, ImmutableList.Builder<ReviewedLine>> builders = new LinkedHashMap<>();
+      for (LineEntity entity : store) {
+        if (!entity.psId().equals(psId) || !entity.path().equals(path)) {
+          continue;
+        }
+        builders
+            .computeIfAbsent(entity.accountId(), k -> ImmutableList.builder())
+            .add(
+                ReviewedLine.create(
+                    entity.path(),
+                    entity.lineNumber(),
+                    entity.side(),
+                    entity.startLine(),
+                    entity.startChar(),
+                    entity.endLine(),
+                    entity.endChar()));
+      }
+      ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
+          ImmutableMap.builder();
+      builders.forEach((accountId, builder) -> result.put(accountId, builder.build()));
+      return result.build();
+    }
+  }
+
   @Override
   public Optional<PatchSetWithReviewedLines> findReviewedLines(
       PatchSet.Id psId, Account.Id accountId, String path) {
@@ -430,6 +501,40 @@ public class FakeAccountPatchLineReviewStore
         return Optional.empty();
       }
       return Optional.of(PatchSetWithReviewedLines.create(psId, lines));
+    }
+  }
+
+  @Override
+  public void logLineReviewAction(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      LineReviewedInput input,
+      LineReviewAction action) {
+    Side side = input.side != null ? input.side : Side.REVISION;
+    short sideShort = side == Side.PARENT ? (short) 0 : (short) 1;
+    int[] lineNumber = new int[1];
+    int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
+    normalize(input, lineNumber, startLine, startChar, endLine, endChar);
+    synchronized (history) {
+      history.add(
+          LineReviewHistoryEntry.create(
+              psId, accountId, path, lineNumber[0], sideShort,
+              startLine[0], startChar[0], endLine[0], endChar[0],
+              action, new Timestamp(System.currentTimeMillis())));
+    }
+  }
+
+  @Override
+  public ImmutableList<LineReviewHistoryEntry> findLineReviewHistory(Change.Id changeId) {
+    synchronized (history) {
+      ImmutableList.Builder<LineReviewHistoryEntry> builder = ImmutableList.builder();
+      for (LineReviewHistoryEntry entry : history) {
+        if (entry.patchSetId().changeId().equals(changeId)) {
+          builder.add(entry);
+        }
+      }
+      return builder.build();
     }
   }
 }
