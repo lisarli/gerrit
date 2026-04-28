@@ -199,17 +199,6 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
-    LineEntity entity =
-        LineEntity.create(
-            psId,
-            accountId,
-            path,
-            lineNumber[0],
-            sideShort,
-            startLine[0],
-            startChar[0],
-            endLine[0],
-            endChar[0]);
     boolean added;
     synchronized (store) {
       Optional<LineEntity> existing =
@@ -224,42 +213,44 @@ public class FakeAccountPatchLineReviewStore
               endLine[0],
               endChar[0]);
       if (existing.isEmpty()) {
-        return store.add(
-            LineEntity.create(
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0],
-                ReviewStatus.READ,
-                false));
+        added =
+            store.add(
+                LineEntity.create(
+                    psId,
+                    accountId,
+                    path,
+                    lineNumber[0],
+                    sideShort,
+                    startLine[0],
+                    startChar[0],
+                    endLine[0],
+                    endChar[0],
+                    ReviewStatus.READ,
+                    false));
+      } else {
+        LineEntity e = existing.get();
+        if (e.reviewStatus() == ReviewStatus.READ) {
+          added = false;
+        } else if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
+          store.remove(e);
+          added =
+              store.add(
+                  LineEntity.create(
+                      psId,
+                      accountId,
+                      path,
+                      lineNumber[0],
+                      sideShort,
+                      startLine[0],
+                      startChar[0],
+                      endLine[0],
+                      endChar[0],
+                      ReviewStatus.READ,
+                      e.tentativeCarryover()));
+        } else {
+          added = false;
+        }
       }
-      LineEntity e = existing.get();
-      if (e.reviewStatus() == ReviewStatus.READ) {
-        return false;
-      }
-      if (e.reviewStatus() == ReviewStatus.TENTATIVELY_READ) {
-        store.remove(e);
-        return store.add(
-            LineEntity.create(
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0],
-                ReviewStatus.READ,
-                e.tentativeCarryover()));
-      }
-      return false;
-      added = store.add(entity);
     }
     if (added) {
       synchronized (history) {
@@ -280,6 +271,9 @@ public class FakeAccountPatchLineReviewStore
       Account.Id accountId,
       String path,
       Collection<LineReviewedInput> inputs) {
+    if (inputs == null || inputs.isEmpty()) {
+      return;
+    }
     inputs.forEach(
         input -> {
           var unused = markLineReviewed(psId, accountId, path, input);
@@ -299,11 +293,7 @@ public class FakeAccountPatchLineReviewStore
     int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
     normalize(input, lineNumber, startLine, startChar, endLine, endChar);
 
-    LineEntity entity =
-        LineEntity.create(
-            psId, accountId, path, lineNumber[0], sideShort,
-            startLine[0], startChar[0], endLine[0], endChar[0]);
-    boolean removed;
+    boolean changed;
     synchronized (store) {
       Optional<LineEntity> existing =
           findEntity(
@@ -335,9 +325,10 @@ public class FakeAccountPatchLineReviewStore
                 endChar[0],
                 ReviewStatus.TENTATIVELY_READ,
                 true));
-      removed = store.remove(entity);
+      }
+      changed = true;
     }
-    if (removed) {
+    if (changed) {
       synchronized (history) {
         history.add(
             LineReviewHistoryEntry.create(
@@ -446,6 +437,7 @@ public class FakeAccountPatchLineReviewStore
   }
 
   /** Returns all matching lines for the account and patch set, optionally filtered to one path. */
+  @Override
   public ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> findAllReviewedLines(
       PatchSet.Id psId, String path) {
     synchronized (store) {
@@ -464,7 +456,8 @@ public class FakeAccountPatchLineReviewStore
                     entity.startLine(),
                     entity.startChar(),
                     entity.endLine(),
-                    entity.endChar()));
+                    entity.endChar(),
+                    entity.reviewStatus()));
       }
       ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
           ImmutableMap.builder();

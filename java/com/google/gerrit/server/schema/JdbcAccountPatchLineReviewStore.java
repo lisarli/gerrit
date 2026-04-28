@@ -864,7 +864,8 @@ public abstract class JdbcAccountPatchLineReviewStore
                     rs.getInt(COL_START_LINE),
                     rs.getInt(COL_START_CHAR),
                     rs.getInt(COL_END_LINE),
-                    rs.getInt(COL_END_CHAR)));
+                    rs.getInt(COL_END_CHAR),
+                    ReviewStatus.fromDbValue(rs.getShort("review_status"))));
           }
           ImmutableList<ReviewedLine> lines = builder.build();
           if (lines.isEmpty()) {
@@ -987,7 +988,7 @@ public abstract class JdbcAccountPatchLineReviewStore
         PreparedStatement stmt =
             con.prepareStatement(
                 "SELECT account_id, file_name, line_number, side, start_line, start_char, "
-                    + "end_line, end_char "
+                    + "end_line, end_char, review_status "
                     + "FROM account_patch_line_reviews "
                     + "WHERE change_id = ? AND patch_set_id = ? AND file_name = ? "
                     + "ORDER BY account_id, line_number")) {
@@ -1008,7 +1009,8 @@ public abstract class JdbcAccountPatchLineReviewStore
                       rs.getInt(COL_START_LINE),
                       rs.getInt(COL_START_CHAR),
                       rs.getInt(COL_END_LINE),
-                      rs.getInt(COL_END_CHAR)));
+                      rs.getInt(COL_END_CHAR),
+                      ReviewStatus.fromDbValue(rs.getShort("review_status"))));
         }
         ImmutableMap.Builder<Account.Id, ImmutableList<ReviewedLine>> result =
             ImmutableMap.builder();
