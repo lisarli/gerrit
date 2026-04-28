@@ -56,6 +56,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import com.google.common.annotations.VisibleForTesting;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
@@ -559,124 +560,127 @@ public abstract class JdbcAccountPatchLineReviewStore
 
   @Override
   public void clearLineReviewed(
-      PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
-    Side side = input.side != null ? input.side : Side.REVISION;
-    int[] lineNumber = new int[1];
-    int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
-    normalizeInput(input, lineNumber, startLine, startChar, endLine, endChar);
-    short sideShort = sideToShort(side);
+    PatchSet.Id psId, Account.Id accountId, String path, LineReviewedInput input) {
+  Side side = input.side != null ? input.side : Side.REVISION;
+  int[] lineNumber = new int[1];
+  int[] startLine = new int[1], startChar = new int[1], endLine = new int[1], endChar = new int[1];
+  normalizeInput(input, lineNumber, startLine, startChar, endLine, endChar);
+  short sideShort = sideToShort(side);
 
-    try (TraceTimer ignored =
-            TraceContext.newTimer(
-                "Clear line/region reviewed flag",
-                Metadata.builder()
-                    .patchSetId(psId.get())
-                    .accountId(accountId.get())
-                    .filePath(path)
-                    .build());
-        Connection con = ds.getConnection()) {
-      boolean prevAutoCommit = con.getAutoCommit();
-      // Select-then-update/delete must be atomic for correct carryover downgrade vs delete.
-      con.setAutoCommit(false);
-      try {
-        boolean changed =
-            clearLineReviewedInTransaction(
-                con,
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0]);
-        con.commit();
-        if (changed) {
-          try {
-            insertHistoryEntry(
-                con,
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0],
-                LineReviewAction.UNMARKED);
-          } catch (SQLException e) {
-            logger.atWarning().withCause(e).log("Failed to log UNMARKED action to history");
-          }
+  try (TraceTimer ignored =
+          TraceContext.newTimer(
+              "Clear line/region reviewed flag",
+              Metadata.builder()
+                  .patchSetId(psId.get())
+                  .accountId(accountId.get())
+                  .filePath(path)
+                  .build());
+      Connection con = ds.getConnection()) {
+    boolean prevAutoCommit = con.getAutoCommit();
+    // Select-then-update/delete must be atomic for correct carryover downgrade vs delete.
+    con.setAutoCommit(false);
+    try {
+      boolean changed =
+          clearLineReviewedInTransaction(
+              con,
+              psId,
+              accountId,
+              path,
+              lineNumber[0],
+              sideShort,
+              startLine[0],
+              startChar[0],
+              endLine[0],
+              endChar[0]);
+      con.commit();
+
+      if (changed) {
+        try {
+          insertHistoryEntry(
+              con,
+              psId,
+              accountId,
+              path,
+              lineNumber[0],
+              sideShort,
+              startLine[0],
+              startChar[0],
+              endLine[0],
+              endChar[0],
+              LineReviewAction.UNMARKED);
+        } catch (SQLException e) {
+          logger.atWarning().withCause(e).log("Failed to log UNMARKED action to history");
         }
-      } catch (SQLException e) {
-        con.rollback();
-        throw convertError("clearLineReviewed", e);
-      } finally {
-        con.setAutoCommit(prevAutoCommit);
       }
     } catch (SQLException e) {
+      con.rollback();
       throw convertError("clearLineReviewed", e);
+    } finally {
+      con.setAutoCommit(prevAutoCommit);
     }
+  } catch (SQLException e) {
+    throw convertError("clearLineReviewed", e);
   }
+}
 
   /**
    * If the row is {@link ReviewStatus#READ} with {@code tentative_carryover}, downgrade to {@link
    * ReviewStatus#TENTATIVELY_READ}; otherwise delete the row (unread or dismissing tentative).
    */
   private boolean clearLineReviewedInTransaction(
-      Connection con,
-      PatchSet.Id psId,
-      Account.Id accountId,
-      String path,
-      int lineNumber,
-      short side,
-      int startLine,
-      int startChar,
-      int endLine,
-      int endChar)
-      throws SQLException {
-    String select =
-        "SELECT review_status, tentative_carryover FROM account_patch_line_reviews WHERE "
-            + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
-            + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
-            + "AND end_line = ? AND end_char = ?";
-    try (PreparedStatement sel = con.prepareStatement(select)) {
-      bindLineGeometry(
-          sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
-      try (ResultSet rs = sel.executeQuery()) {
-        if (!rs.next()) {
-          return false;
-        }
-        ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
-        boolean carry = rs.getBoolean(2);
-        if (current == ReviewStatus.READ && carry) {
-          try (PreparedStatement upd =
-              con.prepareStatement(
-                  "UPDATE account_patch_line_reviews SET review_status = ? WHERE "
-                      + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
-                      + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
-                      + "AND end_line = ? AND end_char = ?")) {
-            upd.setShort(1, ReviewStatus.TENTATIVELY_READ.toDbValue());
-            bindLineGeometry(
-                upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
-            upd.executeUpdate();
-          }
-          return true;
-        }
-        try (PreparedStatement del =
+    Connection con,
+    PatchSet.Id psId,
+    Account.Id accountId,
+    String path,
+    int lineNumber,
+    short side,
+    int startLine,
+    int startChar,
+    int endLine,
+    int endChar)
+    throws SQLException {
+  String select =
+      "SELECT review_status, tentative_carryover FROM account_patch_line_reviews WHERE "
+          + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+          + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+          + "AND end_line = ? AND end_char = ?";
+  try (PreparedStatement sel = con.prepareStatement(select)) {
+    bindLineGeometry(
+        sel, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+    try (ResultSet rs = sel.executeQuery()) {
+      if (!rs.next()) {
+        return false;
+      }
+
+      ReviewStatus current = ReviewStatus.fromDbValue(rs.getShort(1));
+      boolean carry = rs.getBoolean(2);
+
+      if (current == ReviewStatus.READ && carry) {
+        try (PreparedStatement upd =
             con.prepareStatement(
-                "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
-                    + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
-                    + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
+                "UPDATE account_patch_line_reviews SET review_status = ? WHERE "
+                    + "account_id = ? AND change_id = ? AND patch_set_id = ? AND file_name = ? "
+                    + "AND line_number = ? AND side = ? AND start_line = ? AND start_char = ? "
+                    + "AND end_line = ? AND end_char = ?")) {
+          upd.setShort(1, ReviewStatus.TENTATIVELY_READ.toDbValue());
           bindLineGeometry(
-              del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
-          return del.executeUpdate() > 0;
+              upd, 2, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+          return upd.executeUpdate() > 0;
         }
+      }
+
+      try (PreparedStatement del =
+          con.prepareStatement(
+              "DELETE FROM account_patch_line_reviews WHERE account_id = ? AND change_id = ? "
+                  + "AND patch_set_id = ? AND file_name = ? AND line_number = ? AND side = ? "
+                  + "AND start_line = ? AND start_char = ? AND end_line = ? AND end_char = ?")) {
+        bindLineGeometry(
+            del, 1, accountId, psId, path, lineNumber, side, startLine, startChar, endLine, endChar);
+        return del.executeUpdate() > 0;
       }
     }
   }
+}
 
   @Override
   public void clearLineReviewed(PatchSet.Id psId) {
