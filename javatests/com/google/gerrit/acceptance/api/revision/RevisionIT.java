@@ -67,6 +67,7 @@ import com.google.gerrit.entities.Permission;
 import com.google.gerrit.entities.Project;
 import com.google.gerrit.entities.RefNames;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 import com.google.gerrit.extensions.common.LineReviewedInfo;
 import com.google.gerrit.extensions.common.LineReviewHistoryInfo;
@@ -94,10 +95,12 @@ import com.google.gerrit.extensions.common.ChangeInfo;
 import com.google.gerrit.extensions.common.ChangeMessageInfo;
 import com.google.gerrit.extensions.common.CommentInfo;
 import com.google.gerrit.extensions.common.CommitInfo;
+import com.google.gerrit.extensions.common.FileLineReviewProgressInfo;
 import com.google.gerrit.extensions.common.FileInfo;
 import com.google.gerrit.extensions.common.GitPerson;
 import com.google.gerrit.extensions.common.LabelInfo;
 import com.google.gerrit.extensions.common.MergeableInfo;
+import com.google.gerrit.extensions.common.ReviewerLineReviewProgressInfo;
 import com.google.gerrit.extensions.common.RevisionInfo;
 import com.google.gerrit.extensions.common.RevisionInfo.ParentInfo;
 import com.google.gerrit.extensions.common.WebLinkInfo;
@@ -1730,10 +1733,466 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(found).isEmpty();
   }
 
+  @Test
+  public void lineReviewsArePropagatedToNextPatchSetAsTentative() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    // Insert two lines at the top so the previously reviewed line 5 moves to line 7.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    // Carryover is intentionally tentative: unchanged/mapped regions are pre-marked for reviewer
+    // convenience, but still distinguishable from explicit READ in this patch set.
+    assertThat(found).isPresent();
+    assertThat(found.get().lines()).hasSize(1);
+    assertThat(found.get().lines().get(0).lineNumber()).isEqualTo(7);
+    assertThat(found.get().lines().get(0).reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void lineReviewsPropagateIndependentlyForMultipleAccounts() throws Exception {
+    TestAccount reviewer2 = accountCreator.user2();
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput adminLine = new LineReviewedInput();
+    adminLine.line = 5;
+    adminLine.side = Side.REVISION;
+    var unused1 =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, adminLine);
+
+    LineReviewedInput reviewer2Line = new LineReviewedInput();
+    reviewer2Line.line = 8;
+    reviewer2Line.side = Side.REVISION;
+    var unused2 =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), reviewer2.id(), PushOneCommit.FILE_NAME, reviewer2Line);
+
+    // Insert one line at the top so line mappings shift by +1.
+    PushOneCommit.Result r2 = updateChange(r1, "new0\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> adminFound =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(adminFound).isPresent();
+    assertThat(adminFound.get().lines()).hasSize(1);
+    assertThat(adminFound.get().lines().get(0).lineNumber()).isEqualTo(6);
+    assertThat(adminFound.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> reviewer2Found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), reviewer2.id(), PushOneCommit.FILE_NAME);
+    assertThat(reviewer2Found).isPresent();
+    assertThat(reviewer2Found.get().lines()).hasSize(1);
+    assertThat(reviewer2Found.get().lines().get(0).lineNumber()).isEqualTo(9);
+    assertThat(reviewer2Found.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void lineReviewIsDroppedWhenOriginalLineIsDeleted() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(), testRepo, SUBJECT, PushOneCommit.FILE_NAME, "l1\nl2\nl3\nl4\nl5\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    // Remove the previously reviewed last line from the new patch set.
+    PushOneCommit.Result r2 = updateChange(r1, "l1\nl2\nl3\nl4\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isEmpty();
+  }
+
+  @Test
+  public void parentSideLineReviewIsNotPropagated() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(), testRepo, SUBJECT, PushOneCommit.FILE_NAME, "l1\nl2\nl3\nl4\nl5\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 3;
+    input.side = Side.PARENT;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    PushOneCommit.Result r2 = updateChange(r1, "new0\nl1\nl2\nl3\nl4\nl5\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isEmpty();
+  }
+
+  @Test
+  public void rangedLineReviewPropagatesAsTentative() throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            PushOneCommit.FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 8;
+    input.side = Side.REVISION;
+    com.google.gerrit.extensions.client.Comment.Range range =
+        new com.google.gerrit.extensions.client.Comment.Range();
+    range.startLine = 6;
+    range.startCharacter = 1;
+    range.endLine = 8;
+    range.endCharacter = 4;
+    input.range = range;
+    var unused =
+        accountPatchLineReviewStore.markLineReviewed(
+            r1.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME, input);
+
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    Optional<AccountPatchLineReviewStore.PatchSetWithReviewedLines> found =
+        accountPatchLineReviewStore.findReviewedLines(
+            r2.getPatchSetId(), admin.id(), PushOneCommit.FILE_NAME);
+    assertThat(found).isPresent();
+    assertThat(found.get().lines()).hasSize(1);
+    assertThat(found.get().lines().get(0).reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+    assertThat(found.get().lines().get(0).startLine()).isEqualTo(8);
+    assertThat(found.get().lines().get(0).endLine()).isEqualTo(10);
+    assertThat(found.get().lines().get(0).startChar()).isEqualTo(1);
+    assertThat(found.get().lines().get(0).endChar()).isEqualTo(4);
+  }
+
   // -- HTTP-level tests for the reviewed_lines REST endpoint --
 
   private String reviewedLinesUrl(String changeId) {
-    return "/changes/" + changeId + "/revisions/current/files/" + FILE_NAME + "/reviewed_lines";
+    return reviewedLinesUrl(changeId, FILE_NAME);
+  }
+
+  private String reviewedLinesUrl(String changeId, String fileName) {
+    return "/changes/" + changeId + "/revisions/current/files/" + fileName + "/reviewed_lines";
+  }
+
+  private String fileLineReviewProgressUrl(String changeId, String fileName) {
+    return "/changes/" + changeId + "/revisions/current/files/" + fileName + "/line_review_progress";
+  }
+
+  @Test
+  public void getFileLineReviewProgress_percentagesUseWholeFileLineCount() throws Exception {
+    PushOneCommit.Result r =
+        createChange(SUBJECT, FILE_NAME, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(10);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.account._accountId).isEqualTo(admin.id().get());
+    assertThat(a.percentRead).isWithin(0.001).of(10.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(90.0);
+    assertThat(progress.percentRead).isWithin(0.001).of(10.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(90.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_overallProgressUsesAnyReviewerCoverage()
+      throws Exception {
+    PushOneCommit.Result r =
+        createChange(SUBJECT, FILE_NAME, "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 2;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), adminInput).assertCreated();
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 9;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r.getChangeId()), userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(10);
+    assertThat(progress.percentRead).isWithin(0.001).of(20.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(80.0);
+    assertThat(progress.reviewers).hasSize(2);
+
+    Double adminRead = null;
+    Double userRead = null;
+    for (ReviewerLineReviewProgressInfo reviewer : progress.reviewers) {
+      if (reviewer.account._accountId == admin.id().get()) {
+        adminRead = reviewer.percentRead;
+      } else if (reviewer.account._accountId == user.id().get()) {
+        userRead = reviewer.percentRead;
+      }
+    }
+    assertThat(adminRead).isWithin(0.001).of(10.0);
+    assertThat(userRead).isWithin(0.001).of(10.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_separateDenominatorPerFile() throws Exception {
+    String fiveLines = "l1\nl2\nl3\nl4\nl5\n";
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            ImmutableMap.of(FILE_NAME, fiveLines, "b.txt", fiveLines));
+    PushOneCommit.Result r = push.to("refs/for/master");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 2;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse fileA =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    fileA.assertOK();
+    FileLineReviewProgressInfo pa =
+        newGson()
+            .fromJson(fileA.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(pa.totalLinesInFile).isEqualTo(5);
+    assertThat(pa.reviewers).hasSize(1);
+    assertThat(pa.reviewers.get(0).percentRead).isWithin(0.001).of(20.0);
+
+    RestResponse fileB =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), "b.txt"));
+    fileB.assertOK();
+    FileLineReviewProgressInfo pb =
+        newGson()
+            .fromJson(fileB.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(pb.totalLinesInFile).isEqualTo(5);
+    assertThat(pb.reviewers).hasSize(1);
+    assertThat(pb.reviewers.get(0).percentRead).isWithin(0.001).of(0.0);
+    assertThat(pb.reviewers.get(0).percentUnread).isWithin(0.001).of(100.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_tentativelyReadPercent_nonZeroAfterPropagation()
+      throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r1.getChangeId()), input).assertCreated();
+
+    // Two lines inserted at top: former line 5 is now line 7; propagation stores it as tentative.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r2.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(12);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.account._accountId).isEqualTo(admin.id().get());
+    assertThat(a.percentRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(100.0 * 11 / 12);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_fullyReviewedFile_percentReadIs100() throws Exception {
+    PushOneCommit.Result r = createChange(SUBJECT, FILE_NAME, "r1\nr2\nr3\n");
+    String url = reviewedLinesUrl(r.getChangeId());
+    for (int line = 1; line <= 3; line++) {
+      LineReviewedInput input = new LineReviewedInput();
+      input.line = line;
+      input.side = Side.REVISION;
+      adminRestSession.put(url, input).assertCreated();
+    }
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(3);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.percentRead).isWithin(0.001).of(100.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(0.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_is100WhenAnyReviewerCoverageIsComplete() throws Exception {
+    PushOneCommit.Result r = createChange(SUBJECT, FILE_NAME, "r1\nr2\nr3\n");
+    String url = reviewedLinesUrl(r.getChangeId());
+    for (int line = 1; line <= 3; line++) {
+      LineReviewedInput input = new LineReviewedInput();
+      input.line = line;
+      input.side = Side.REVISION;
+      adminRestSession.put(url, input).assertCreated();
+    }
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 1;
+    userInput.side = Side.REVISION;
+    userRestSession.put(url, userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+
+    assertThat(progress.percentRead).isWithin(0.001).of(100.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(0.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_overallReadWinsOverTentativeAcrossReviewers()
+      throws Exception {
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            FILE_NAME,
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+    PushOneCommit.Result r1 = push.to("refs/for/master");
+
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 5;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r1.getChangeId()), adminInput).assertCreated();
+
+    // Propagation carries admin's marker forward as tentative at line 7.
+    PushOneCommit.Result r2 =
+        updateChange(r1, "new1\nnew2\nl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n");
+
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 7;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r2.getChangeId()), userInput).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r2.getChangeId(), FILE_NAME));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+
+    assertThat(progress.totalLinesInFile).isEqualTo(12);
+    assertThat(progress.reviewers).hasSize(2);
+    // Overall uses any-reviewer coverage with READ precedence over tentative on the same line.
+    assertThat(progress.percentRead).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(progress.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(progress.percentUnread).isWithin(0.001).of(100.0 * 11 / 12);
+
+    Double adminTentative = null;
+    Double userRead = null;
+    for (ReviewerLineReviewProgressInfo reviewer : progress.reviewers) {
+      if (reviewer.account._accountId == admin.id().get()) {
+        adminTentative = reviewer.percentTentativelyRead;
+      } else if (reviewer.account._accountId == user.id().get()) {
+        userRead = reviewer.percentRead;
+      }
+    }
+    assertThat(adminTentative).isWithin(0.001).of(100.0 / 12.0);
+    assertThat(userRead).isWithin(0.001).of(100.0 / 12.0);
+  }
+
+  @Test
+  public void getFileLineReviewProgress_unreviewedFile_percentReadIsZero() throws Exception {
+    String fiveLines = "l1\nl2\nl3\nl4\nl5\n";
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            SUBJECT,
+            ImmutableMap.of(FILE_NAME, fiveLines, "b.txt", fiveLines));
+    PushOneCommit.Result r = push.to("refs/for/master");
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId(), FILE_NAME), input).assertCreated();
+
+    RestResponse getResp =
+        adminRestSession.get(fileLineReviewProgressUrl(r.getChangeId(), "b.txt"));
+    getResp.assertOK();
+    FileLineReviewProgressInfo progress =
+        newGson()
+            .fromJson(
+                getResp.getReader(), new TypeToken<FileLineReviewProgressInfo>() {}.getType());
+    assertThat(progress.totalLinesInFile).isEqualTo(5);
+    assertThat(progress.reviewers).hasSize(1);
+    ReviewerLineReviewProgressInfo a = progress.reviewers.get(0);
+    assertThat(a.percentRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentTentativelyRead).isWithin(0.001).of(0.0);
+    assertThat(a.percentUnread).isWithin(0.001).of(100.0);
   }
 
   @Test
@@ -1850,6 +2309,119 @@ public class RevisionIT extends AbstractDaemonTest {
     PushOneCommit.Result r = createChange();
 
     adminRestSession.delete(reviewedLinesUrl(r.getChangeId())).assertBadRequest();
+  }
+
+  // -- HTTP-level tests for the all_reviewed_lines REST endpoint --
+
+  private String allReviewedLinesUrl(String changeId) {
+    return "/changes/"
+        + changeId
+        + "/revisions/current/files/"
+        + FILE_NAME
+        + "/all_reviewed_lines";
+  }
+
+  @Test
+  public void getAllReviewedLines_noMarkers_returnsEmptyMap() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void getAllReviewedLines_singleReviewer_returnsMarkersUnderAccountId() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 5;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(admin.id().get());
+    List<LineReviewedInfo> adminLines = result.get(admin.id().get());
+    assertThat(adminLines).hasSize(1);
+    assertThat(adminLines.get(0).line).isEqualTo(5);
+    assertThat(adminLines.get(0).side).isEqualTo(Side.REVISION);
+  }
+
+  @Test
+  public void getAllReviewedLines_multipleReviewers_returnsAllMarkers() throws Exception {
+    PushOneCommit.Result r = createChange();
+
+    // Admin marks line 5
+    LineReviewedInput adminInput = new LineReviewedInput();
+    adminInput.line = 5;
+    adminInput.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), adminInput).assertCreated();
+
+    // User marks line 10
+    LineReviewedInput userInput = new LineReviewedInput();
+    userInput.line = 10;
+    userInput.side = Side.REVISION;
+    userRestSession.put(reviewedLinesUrl(r.getChangeId()), userInput).assertCreated();
+
+    RestResponse resp = adminRestSession.get(allReviewedLinesUrl(r.getChangeId()));
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).hasSize(2);
+    assertThat(result).containsKey(admin.id().get());
+    assertThat(result).containsKey(user.id().get());
+    assertThat(result.get(admin.id().get()).get(0).line).isEqualTo(5);
+    assertThat(result.get(user.id().get()).get(0).line).isEqualTo(10);
+  }
+
+  @Test
+  public void getAllReviewedLines_markersOnOtherFile_notIncluded() throws Exception {
+    // Create a change with two files
+    PushOneCommit push =
+        pushFactory.create(
+            admin.newIdent(),
+            testRepo,
+            "Subject",
+            ImmutableMap.of(FILE_NAME, "content", "other.txt", "other content"));
+    PushOneCommit.Result r = push.to("refs/for/master");
+
+    // Admin marks a line in FILE_NAME
+    LineReviewedInput input = new LineReviewedInput();
+    input.line = 1;
+    input.side = Side.REVISION;
+    adminRestSession.put(reviewedLinesUrl(r.getChangeId()), input).assertCreated();
+
+    // Query all_reviewed_lines for the other file — should be empty
+    String otherFileUrl =
+        "/changes/"
+            + r.getChangeId()
+            + "/revisions/current/files/other.txt/all_reviewed_lines";
+    RestResponse resp = adminRestSession.get(otherFileUrl);
+    resp.assertOK();
+    Map<Integer, List<LineReviewedInfo>> result =
+        newGson()
+            .fromJson(
+                resp.getReader(),
+                new TypeToken<Map<Integer, List<LineReviewedInfo>>>() {}.getType());
+
+    assertThat(result).isEmpty();
   }
 
   @Test
@@ -3024,6 +3596,7 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_empty() throws Exception {
+    // A new change with no mark/unmark actions should return an empty history list.
     PushOneCommit.Result r = createChange();
 
     RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
@@ -3036,6 +3609,7 @@ public class RevisionIT extends AbstractDaemonTest {
 
   @Test
   public void getReviewedLineHistory_afterMark() throws Exception {
+    // Marking a line via PUT should produce one MARKED entry with the correct file and line.
     PushOneCommit.Result r = createChange();
     String url = reviewedLinesUrl(r.getChangeId());
 
@@ -3051,12 +3625,14 @@ public class RevisionIT extends AbstractDaemonTest {
             .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
     assertThat(history.get(0).file).isEqualTo(FILE_NAME);
     assertThat(history.get(0).line).isEqualTo(5);
   }
 
   @Test
   public void getReviewedLineHistory_afterMarkAndUnmark() throws Exception {
+    // The full mark-then-unmark sequence should be preserved in chronological order.
     PushOneCommit.Result r = createChange();
     String url = reviewedLinesUrl(r.getChangeId());
 
@@ -3075,20 +3651,22 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(history).hasSize(2);
     assertThat(history.get(0).action).isEqualTo("MARKED");
     assertThat(history.get(1).action).isEqualTo("UNMARKED");
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
+    assertThat(history.get(1).patchSetId).isEqualTo(r.getPatchSetId().get());
   }
 
   @Test
   public void getReviewedLineHistory_unifiedAcrossUsers() throws Exception {
+    // History is shared across all users: a different user's mark is visible to admin,
+    // and the response includes the accountId of whoever performed the action.
     PushOneCommit.Result r = createChange();
     String linesUrl = reviewedLinesUrl(r.getChangeId());
 
-    // user marks a line
     LineReviewedInput input = new LineReviewedInput();
     input.line = 7;
     input.side = Side.REVISION;
     userRestSession.put(linesUrl, input).assertCreated();
 
-    // admin sees the unified history including user's action
     RestResponse resp = adminRestSession.get(reviewedLineHistoryUrl(r.getChangeId()));
     resp.assertOK();
     List<LineReviewHistoryInfo> history =
@@ -3098,5 +3676,6 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(history.get(0).action).isEqualTo("MARKED");
     assertThat(history.get(0).line).isEqualTo(7);
     assertThat(history.get(0).accountId).isEqualTo(user.id().get());
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
   }
 }

@@ -221,7 +221,8 @@ public class ChangesRestApiBindingsIT extends AbstractDaemonTest {
           RestCall.delete("/changes/%s/revisions/%s/files/%s/reviewed"),
           RestCall.get("/changes/%s/revisions/%s/files/%s/reviewed_lines"),
           RestCall.put("/changes/%s/revisions/%s/files/%s/reviewed_lines"),
-          RestCall.delete("/changes/%s/revisions/%s/files/%s/reviewed_lines"));
+          RestCall.delete("/changes/%s/revisions/%s/files/%s/reviewed_lines"),
+          RestCall.get("/changes/%s/revisions/%s/files/%s/all_reviewed_lines"));
 
   /**
    * Change message REST endpoints to be tested, each URL contains placeholders for the change

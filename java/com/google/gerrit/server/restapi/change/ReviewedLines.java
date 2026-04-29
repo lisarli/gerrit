@@ -14,6 +14,10 @@
 
 package com.google.gerrit.server.restapi.change;
 
+import com.google.gerrit.extensions.client.ReviewStatus;
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
+import com.google.gerrit.entities.Account;
 import com.google.gerrit.extensions.common.LineReviewedInfo;
 import com.google.gerrit.extensions.restapi.BadRequestException;
 import com.google.gerrit.extensions.restapi.Response;
@@ -25,7 +29,9 @@ import com.google.gerrit.server.plugincontext.PluginItemContext;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** REST API for line-level and region-level reviewed flags within a file. */
@@ -59,6 +65,9 @@ public class ReviewedLines {
               LineReviewedInfo info = new LineReviewedInfo();
               info.line = line.lineNumber();
               info.side = line.getSide();
+              // Can be READ (explicit in this patch set) or TENTATIVELY_READ (propagated from a
+              // prior patch set for unchanged regions).
+              info.status = line.reviewStatus();
               if (line.startLine() != line.endLine()
                   || line.startChar() != 0
                   || line.endChar() != 0) {
@@ -72,6 +81,49 @@ public class ReviewedLines {
             }
           });
       return Response.ok(infos);
+    }
+  }
+
+  @Singleton
+  public static class GetAllReviewedLines implements RestReadView<FileResource> {
+    private final PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore;
+
+    @Inject
+    GetAllReviewedLines(PluginItemContext<AccountPatchLineReviewStore> accountPatchLineReviewStore) {
+      this.accountPatchLineReviewStore = accountPatchLineReviewStore;
+    }
+
+    @Override
+    public Response<Map<Integer, List<LineReviewedInfo>>> apply(FileResource resource) {
+      ImmutableMap<Account.Id, ImmutableList<AccountPatchLineReviewStore.ReviewedLine>> byAccount =
+          accountPatchLineReviewStore.call(
+              s ->
+                  s.findAllReviewedLines(
+                      resource.getPatchKey().patchSetId(),
+                      resource.getPatchKey().fileName()));
+
+      Map<Integer, List<LineReviewedInfo>> result = new LinkedHashMap<>();
+      byAccount.forEach(
+          (accountId, lines) -> {
+            List<LineReviewedInfo> infos = new ArrayList<>();
+            for (AccountPatchLineReviewStore.ReviewedLine line : lines) {
+              LineReviewedInfo info = new LineReviewedInfo();
+              info.line = line.lineNumber();
+              info.side = line.getSide();
+              if (line.startLine() != line.endLine()
+                  || line.startChar() != 0
+                  || line.endChar() != 0) {
+                info.range = new com.google.gerrit.extensions.client.Comment.Range();
+                info.range.startLine = line.startLine();
+                info.range.startCharacter = line.startChar();
+                info.range.endLine = line.endLine();
+                info.range.endCharacter = line.endChar();
+              }
+              infos.add(info);
+            }
+            result.put(accountId.get(), infos);
+          });
+      return Response.ok(result);
     }
   }
 
@@ -93,6 +145,9 @@ public class ReviewedLines {
         throws BadRequestException {
       if (input == null || input.line == null || input.line < 1) {
         throw new BadRequestException("line is required (1-based)");
+      }
+      if (input.status != null && input.status != ReviewStatus.READ) {
+        throw new BadRequestException("only READ may be set when marking a line reviewed");
       }
       boolean updated =
           accountPatchLineReviewStore.call(

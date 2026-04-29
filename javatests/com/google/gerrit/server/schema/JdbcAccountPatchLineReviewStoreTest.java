@@ -16,13 +16,16 @@ package com.google.gerrit.server.schema;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
-import com.google.common.collect.ImmutableList;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewAction;
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.LineReviewHistoryEntry;
@@ -30,6 +33,7 @@ import com.google.gerrit.server.change.AccountPatchLineReviewStore.PatchSetWithR
 import com.google.gerrit.server.change.AccountPatchLineReviewStore.ReviewedLine;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.Locale;
 import java.util.Optional;
 import org.junit.After;
 import org.junit.Before;
@@ -97,6 +101,40 @@ public class JdbcAccountPatchLineReviewStoreTest {
     return input;
   }
 
+  private void insertReviewedRow(
+      PatchSet.Id psId,
+      Account.Id accountId,
+      String path,
+      int line,
+      ReviewStatus status,
+      boolean tentativeCarryover)
+      throws Exception {
+
+    try (Connection con = store.getConnection();
+        Statement stmt = con.createStatement()) {
+      String sql =
+          String.format(
+              Locale.US,
+              "INSERT INTO account_patch_line_reviews "
+                  + "(account_id, change_id, patch_set_id, file_name, line_number, side, "
+                  + "start_line, start_char, end_line, end_char, review_status, tentative_carryover) "
+                  + "VALUES (%d, %d, %d, '%s', %d, %d, %d, %d, %d, %d, %d, %s)",
+              accountId.get(),
+              psId.changeId().get(),
+              psId.get(),
+              path,
+              line,
+              /* side=REVISION */ 1,
+              line,
+              0,
+              line,
+              0,
+              status.toDbValue(),
+              tentativeCarryover ? "TRUE" : "FALSE");
+      stmt.executeUpdate(sql);
+    }
+  }
+
   // -- tests --
 
   @Test
@@ -111,6 +149,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
     assertThat(line.lineNumber()).isEqualTo(5);
     assertThat(line.path()).isEqualTo(FILE_A);
     assertThat(line.getSide()).isEqualTo(Side.REVISION);
+    assertThat(line.reviewStatus()).isEqualTo(ReviewStatus.READ);
   }
 
   @Test
@@ -231,6 +270,143 @@ public class JdbcAccountPatchLineReviewStoreTest {
     assertThat(store.findReviewedLines(PS_1, ACCOUNT_2, FILE_A)).isPresent();
   }
 
+  @Test
+  public void clearReadRestoresTentativeWhenCarryover() throws Exception {
+    // Simulate a propagated row (tentative + carryover=true), then verify explicit read and clear
+    // transitions: TENTATIVELY_READ -> READ -> TENTATIVELY_READ.
+    insertReviewedRow(PS_1, ACCOUNT_1, FILE_A, 5, ReviewStatus.TENTATIVELY_READ, true);
+
+    boolean upgraded = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+    assertThat(upgraded).isTrue();
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A).get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.READ);
+
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(5));
+
+    Optional<PatchSetWithReviewedLines> after = store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A);
+    assertThat(after).isPresent();
+    assertThat(after.get().lines()).hasSize(1);
+    assertThat(after.get().lines().get(0).reviewStatus())
+        .isEqualTo(ReviewStatus.TENTATIVELY_READ);
+  }
+
+  @Test
+  public void clearTentativeRowRemovesLine() throws Exception {
+    insertReviewedRow(PS_1, ACCOUNT_1, FILE_A, 7, ReviewStatus.TENTATIVELY_READ, true);
+
+    store.clearLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, FILE_A)).isEmpty();
+  }
+
+  @Test
+  public void accountsWithLineReviews_returnsDistinctAccounts() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_B, lineInput(2));
+
+    assertThat(store.accountsWithLineReviews(PS_1))
+        .containsExactlyElementsIn(ImmutableSet.of(ACCOUNT_1, ACCOUNT_2));
+    assertThat(store.accountsWithLineReviews(PS_2)).isEmpty();
+  }
+
+  @Test
+  public void insertPropagatedTentativeReviews_insertsTentativeWithCarryover() {
+    ReviewedLine line =
+        ReviewedLine.create(
+            FILE_A, 4, (short) 1, 4, 0, 4, 0, ReviewStatus.READ);
+    store.insertPropagatedTentativeReviews(PS_2, ACCOUNT_1, ImmutableList.of(line));
+
+    Optional<PatchSetWithReviewedLines> found =
+        store.findReviewedLines(PS_2, ACCOUNT_1, FILE_A);
+    assertThat(found).isPresent();
+    ReviewedLine stored = found.get().lines().get(0);
+    // JDBC insertion ignores incoming status and persists propagated rows as tentative carryover.
+    assertThat(stored.reviewStatus()).isEqualTo(ReviewStatus.TENTATIVELY_READ);
+    assertThat(stored.lineNumber()).isEqualTo(4);
+  }
+
+  @Test
+  public void insertPropagatedTentativeReviews_skipsExistingKey() {
+    ReviewedLine line =
+        ReviewedLine.create(
+            FILE_A, 4, (short) 1, 4, 0, 4, 0, ReviewStatus.TENTATIVELY_READ);
+    store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
+    store.insertPropagatedTentativeReviews(PS_1, ACCOUNT_1, ImmutableList.of(line));
+
+    assertThat(store.findReviewedLines(PS_1, ACCOUNT_1, null).get().lines()).hasSize(1);
+  }
+
+  // -- tests for findAllReviewedLines --
+
+  @Test
+  public void findAllReviewedLines_noMarkers_returnsEmptyMap() {
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  public void findAllReviewedLines_singleAccount_returnsLines() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(3));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(7));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result.get(ACCOUNT_1)).hasSize(2);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(3);
+    assertThat(result.get(ACCOUNT_1).get(1).lineNumber()).isEqualTo(7);
+  }
+
+  @Test
+  public void findAllReviewedLines_multipleAccounts_groupedByAccount() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(5));
+    var unused3 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_A, lineInput(10));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(2);
+    assertThat(result.get(ACCOUNT_1)).hasSize(1);
+    assertThat(result.get(ACCOUNT_1).get(0).lineNumber()).isEqualTo(1);
+    assertThat(result.get(ACCOUNT_2)).hasSize(2);
+    assertThat(result.get(ACCOUNT_2).get(0).lineNumber()).isEqualTo(5);
+    assertThat(result.get(ACCOUNT_2).get(1).lineNumber()).isEqualTo(10);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByFile() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_1, ACCOUNT_2, FILE_B, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultA =
+        store.findAllReviewedLines(PS_1, FILE_A);
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> resultB =
+        store.findAllReviewedLines(PS_1, FILE_B);
+
+    assertThat(resultA).hasSize(1);
+    assertThat(resultA).containsKey(ACCOUNT_1);
+    assertThat(resultB).hasSize(1);
+    assertThat(resultB).containsKey(ACCOUNT_2);
+  }
+
+  @Test
+  public void findAllReviewedLines_isolatedByPatchSet() {
+    var unused1 = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
+    var unused2 = store.markLineReviewed(PS_2, ACCOUNT_2, FILE_A, lineInput(2));
+
+    ImmutableMap<Account.Id, ImmutableList<ReviewedLine>> result =
+        store.findAllReviewedLines(PS_1, FILE_A);
+
+    assertThat(result).hasSize(1);
+    assertThat(result).containsKey(ACCOUNT_1);
+    assertThat(result).doesNotContainKey(ACCOUNT_2);
+  }
+
   // -- history tests --
 
   @Test
@@ -242,6 +418,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+    assertThat(history.get(0).patchSetId()).isEqualTo(PS_1);
     assertThat(history.get(0).path()).isEqualTo(FILE_A);
     assertThat(history.get(0).lineNumber()).isEqualTo(5);
   }
@@ -290,7 +467,6 @@ public class JdbcAccountPatchLineReviewStoreTest {
   @Test
   public void bulkClear_doesNotLogHistory() {
     var unused = store.markLineReviewed(PS_1, ACCOUNT_1, FILE_A, lineInput(1));
-    // Bulk clear by patch set — should NOT add an UNMARKED history entry
     store.clearLineReviewed(PS_1);
 
     ImmutableList<LineReviewHistoryEntry> history =

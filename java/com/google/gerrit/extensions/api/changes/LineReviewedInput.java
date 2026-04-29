@@ -15,6 +15,7 @@
 package com.google.gerrit.extensions.api.changes;
 
 import com.google.gerrit.extensions.client.Comment.Range;
+import com.google.gerrit.extensions.client.ReviewStatus;
 import com.google.gerrit.extensions.client.Side;
 
 /**
@@ -32,4 +33,13 @@ public class LineReviewedInput {
 
   /** Side of the diff: PARENT (0) or REVISION (1). Default is REVISION. */
   public Side side;
+
+  /**
+   * Review status of the line or region.
+   *
+   * <p>Clients should send {@link ReviewStatus#READ} when marking reviewed. Server-side
+   * propagation may later surface {@link ReviewStatus#TENTATIVELY_READ} for unchanged carryover in
+   * newer patch sets.
+   */
+  public ReviewStatus status;
 }
