@@ -2224,6 +2224,23 @@ suite('gr-diff-view tests', () => {
       assert.deepEqual((element as any).currentReviewerReviewedLines, [
         'some/path.txt:21',
       ]);
+
+      element.onLineSelected(
+        new CustomEvent('line-selected', {
+          detail: {number: 12, side: Side.RIGHT},
+        }) as CustomEvent<any>
+      );
+      await element.updateComplete;
+
+      const historyEventItems = queryAll(element, '.historyEventItem');
+      assert.lengthOf(historyEventItems, 2);
+      assert.include(historyEventItems[0].textContent ?? '', 'Alice');
+      assert.include(historyEventItems[0].textContent ?? '', 'Marked unread');
+      assert.include(historyEventItems[1].textContent ?? '', 'Marked read');
+      assert.include(
+        queryAndAssert(element, '.historySelectionEmpty').textContent ?? '',
+        'No reviewers currently have this line marked read.'
+      );
     });
 
     test('review history selection uses the signed-in reviewer identity', async () => {
