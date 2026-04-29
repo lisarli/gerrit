@@ -19,13 +19,14 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.flogger.FluentLogger;
 import com.google.common.primitives.Ints;
 import com.google.gerrit.entities.Account;
 import com.google.gerrit.entities.Change;
 import com.google.gerrit.entities.PatchSet;
+import com.google.gerrit.exceptions.DuplicateKeyException;
 import com.google.gerrit.exceptions.StorageException;
 import com.google.gerrit.extensions.api.changes.LineReviewedInput;
 import com.google.gerrit.extensions.client.ReviewStatus;
@@ -56,7 +57,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import com.google.common.annotations.VisibleForTesting;
 import javax.sql.DataSource;
 import org.apache.commons.dbcp.BasicDataSource;
 import org.eclipse.jgit.lib.Config;
@@ -396,58 +396,71 @@ public abstract class JdbcAccountPatchLineReviewStore
     short sideShort = sideToShort(side);
 
     try (TraceTimer ignored =
-            TraceContext.newTimer(
-                "Mark line/region as reviewed",
-                Metadata.builder()
-                    .patchSetId(psId.get())
-                    .accountId(accountId.get())
-                    .filePath(path)
-                    .build());
-        Connection con = ds.getConnection()) {
-      boolean prevAutoCommit = con.getAutoCommit();
-      // Select-then-insert/update must be atomic so concurrent reviewers do not double-insert.
-      con.setAutoCommit(false);
-      try {
-        boolean updated =
-            markLineReviewedInTransaction(
-                con,
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0]);
-        con.commit();
-        if (updated) {
+        TraceContext.newTimer(
+            "Mark line/region as reviewed",
+            Metadata.builder()
+                .patchSetId(psId.get())
+                .accountId(accountId.get())
+                .filePath(path)
+                .build())) {
+      // A concurrent PUT for the same geometry can win the race between our select and insert.
+      // Retrying once turns that duplicate-key failure into the expected idempotent behavior.
+      for (int attempt = 0; attempt < 2; attempt++) {
+        try (Connection con = ds.getConnection()) {
+          boolean prevAutoCommit = con.getAutoCommit();
+          // Select-then-insert/update must be atomic so concurrent reviewers do not double-insert.
+          con.setAutoCommit(false);
           try {
-            insertHistoryEntry(
-                con,
-                psId,
-                accountId,
-                path,
-                lineNumber[0],
-                sideShort,
-                startLine[0],
-                startChar[0],
-                endLine[0],
-                endChar[0],
-                LineReviewAction.MARKED);
+            boolean updated =
+                markLineReviewedInTransaction(
+                    con,
+                    psId,
+                    accountId,
+                    path,
+                    lineNumber[0],
+                    sideShort,
+                    startLine[0],
+                    startChar[0],
+                    endLine[0],
+                    endChar[0]);
+            con.commit();
+            if (updated) {
+              try {
+                insertHistoryEntry(
+                    con,
+                    psId,
+                    accountId,
+                    path,
+                    lineNumber[0],
+                    sideShort,
+                    startLine[0],
+                    startChar[0],
+                    endLine[0],
+                    endChar[0],
+                    LineReviewAction.MARKED);
+              } catch (SQLException e) {
+                logger.atWarning().withCause(e).log("Failed to log MARKED action to history");
+              }
+            }
+            return updated;
           } catch (SQLException e) {
-            logger.atWarning().withCause(e).log("Failed to log MARKED action to history");
+            con.rollback();
+            StorageException converted = convertError("markLineReviewed", e);
+            if (attempt == 0 && converted instanceof DuplicateKeyException) {
+              logger.atFine().withCause(e).log(
+                  "Retrying markLineReviewed after duplicate row race for %s:%s",
+                  path, lineNumber[0]);
+              continue;
+            }
+            throw converted;
+          } finally {
+            con.setAutoCommit(prevAutoCommit);
           }
+        } catch (SQLException e) {
+          throw convertError("markLineReviewed", e);
         }
-        return updated;
-      } catch (SQLException e) {
-        con.rollback();
-        throw convertError("markLineReviewed", e);
-      } finally {
-        con.setAutoCommit(prevAutoCommit);
       }
-    } catch (SQLException e) {
-      throw convertError("markLineReviewed", e);
+      throw new StorageException("markLineReviewed retry loop exhausted unexpectedly");
     }
   }
 
@@ -843,6 +856,22 @@ public abstract class JdbcAccountPatchLineReviewStore
           insertStmt.setShort(11, ReviewStatus.TENTATIVELY_READ.toDbValue());
           insertStmt.setBoolean(12, true);
           insertStmt.executeUpdate();
+          try {
+            insertHistoryEntry(
+                con,
+                psId,
+                accountId,
+                line.path(),
+                line.lineNumber(),
+                line.side(),
+                line.startLine(),
+                line.startChar(),
+                line.endLine(),
+                line.endChar(),
+                LineReviewAction.PROPAGATED);
+          } catch (SQLException e) {
+            logger.atWarning().withCause(e).log("Failed to log PROPAGATED action to history");
+          }
         }
       }
     } catch (SQLException e) {

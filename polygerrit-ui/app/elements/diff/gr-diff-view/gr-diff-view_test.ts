@@ -2243,6 +2243,60 @@ suite('gr-diff-view tests', () => {
       );
     });
 
+    test('review history updates after marking a line read', async () => {
+      const bob = {
+        ...createAccountWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [bob],
+        },
+      };
+      userModel.setAccount({
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      });
+      stubRestApi('saveReviewedLine').returns(Promise.resolve(new Response()));
+      getReviewedLineHistoryStub.onFirstCall().returns(Promise.resolve([]));
+      getReviewedLineHistoryStub.onSecondCall().returns(
+        Promise.resolve([
+          {
+            account_id: 102,
+            patch_set_id: 1,
+            file: 'some/path.txt',
+            line: 21,
+            side: CommentSide.REVISION,
+            action: 'MARKED',
+            timestamp: '2026-04-19 12:03:00.000000000',
+          },
+        ])
+      );
+
+      await (element as any).loadLineMarkers();
+      element.onLineSelected(
+        new CustomEvent('line-selected', {
+          detail: {number: 21, side: Side.RIGHT},
+        }) as CustomEvent<any>
+      );
+
+      await (element as any).saveLineMarkerAndRefreshHistory(
+        'some/path.txt',
+        21,
+        true
+      );
+      await waitEventLoop();
+      await element.updateComplete;
+
+      const historyEventItems = queryAll(element, '.historyEventItem');
+      assert.lengthOf(historyEventItems, 1);
+      assert.include(historyEventItems[0].textContent ?? '', 'Bob');
+      assert.include(historyEventItems[0].textContent ?? '', 'Marked read');
+    });
+
     test('review history selection uses the signed-in reviewer identity', async () => {
       const alice = {
         ...createAccountWithIdNameAndEmail(101),

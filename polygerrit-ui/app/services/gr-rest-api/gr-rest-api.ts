@@ -122,6 +122,22 @@ export interface LineReviewedInfo {
     endLine: number;
     endCharacter: number;
   };
+  status?: 'READ' | 'TENTATIVELY_READ';
+}
+
+export interface ReviewerLineReviewProgressInfo {
+  account?: AccountInfo;
+  percentRead?: number;
+  percentTentativelyRead?: number;
+  percentUnread?: number;
+}
+
+export interface FileLineReviewProgressInfo {
+  totalLinesInFile?: number;
+  percentRead?: number;
+  percentTentativelyRead?: number;
+  percentUnread?: number;
+  reviewers?: ReviewerLineReviewProgressInfo[];
 }
 
 export interface LineReviewedInput {
@@ -977,6 +993,18 @@ export interface RestApiService extends Finalizable {
   getReviewedLineHistory(
     changeNum: NumericChangeId
   ): Promise<LineReviewHistoryInfo[] | undefined>;
+
+  getAllReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<Record<number, LineReviewedInfo[]> | undefined>;
+
+  getFileLineReviewProgress(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<FileLineReviewProgressInfo | undefined>;
 
   saveReviewedLine(
     changeNum: NumericChangeId,

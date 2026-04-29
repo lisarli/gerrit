@@ -111,6 +111,7 @@ import {
   IgnoreWhitespaceType,
 } from '../../types/diff';
 import {
+  FileLineReviewProgressInfo,
   GetDiffCommentsOutput,
   LineReviewHistoryInfo,
   LineReviewedInfo,
@@ -2321,6 +2322,34 @@ export class GrRestApiServiceImpl implements RestApiService, Finalizable {
       url: `${url}/reviewed_line_history`,
       anonymizedUrl: `${ANONYMIZED_CHANGE_BASE_URL}/reviewed_line_history`,
     }) as Promise<LineReviewHistoryInfo[] | undefined>;
+  }
+
+  async getAllReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<Record<number, LineReviewedInfo[]> | undefined> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/files/${encodeURIComponent(path)}/all_reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/all_reviewed_lines`,
+      reportServerError: false,
+      errFn: () => {},
+    }) as Promise<Record<number, LineReviewedInfo[]> | undefined>;
+  }
+
+  async getFileLineReviewProgress(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<FileLineReviewProgressInfo | undefined> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/files/${encodeURIComponent(path)}/line_review_progress`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/line_review_progress`,
+      reportServerError: false,
+      errFn: () => {},
+    }) as Promise<FileLineReviewProgressInfo | undefined>;
   }
 
   async saveReviewedLine(

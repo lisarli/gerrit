@@ -81,7 +81,6 @@ import {
   DisplayLine,
   FileRange,
   GrDiffLine,
-  GrDiffLineType,
   LineSelectedEventDetail,
 } from '../../../api/diff';
 import {GrDownloadDialog} from '../../change/gr-download-dialog/gr-download-dialog';
@@ -113,7 +112,10 @@ import {
   MockLineReviewMarkerService,
   RestLineReviewMarkerService,
 } from '../gr-line-review-marker/line-review-marker-service';
-import {LineReviewHistoryInfo} from '../../../services/gr-rest-api/gr-rest-api';
+import {
+  FileLineReviewProgressInfo,
+  LineReviewHistoryInfo,
+} from '../../../services/gr-rest-api/gr-rest-api';
 import {isImageDiff} from '../../../utils/diff-util';
 import {formStyles} from '../../../styles/form-styles';
 import {NormalizedFileInfo} from '../../change/gr-file-list/gr-file-list';
@@ -150,6 +152,7 @@ interface ReviewerHistoryEntry {
 interface ReviewerDot {
   color: string;
   label: string;
+  tentative: boolean;
 }
 
 interface SelectedLineHistoryEvent {
@@ -175,7 +178,7 @@ class LineReadStatusLayer implements DiffLayer {
 
   private markedLines = new Set<string>();
 
-  private explicitlyUnreadLines = new Set<string>();
+  private tentativeLines = new Set<string>();
 
   private dragState?: {path: string; marked: boolean};
 
@@ -256,7 +259,13 @@ class LineReadStatusLayer implements DiffLayer {
         reviewerDot.style.width = '6px';
         reviewerDot.style.height = '6px';
         reviewerDot.style.borderRadius = '50%';
-        reviewerDot.style.backgroundColor = dot.color;
+        if (dot.tentative) {
+          reviewerDot.style.backgroundColor = 'transparent';
+          reviewerDot.style.border = `1px solid ${dot.color}`;
+        } else {
+          reviewerDot.style.backgroundColor = dot.color;
+          reviewerDot.style.border = 'none';
+        }
         reviewerDot.title = dot.label;
         return reviewerDot;
       })
@@ -293,12 +302,23 @@ class LineReadStatusLayer implements DiffLayer {
     const key = this.computeKey(path, lineNum);
     if (marked) {
       this.markedLines.add(key);
-      this.explicitlyUnreadLines.delete(key);
+      this.tentativeLines.delete(key);
     } else {
       this.markedLines.delete(key);
-      // Unmarking should revert to the default status (e.g. tentative for BOTH),
-      // not force the line to be explicitly unread.
-      this.explicitlyUnreadLines.delete(key);
+      // Unmarking reverts to tentative if the backend had propagated this line.
+    }
+    for (const listener of this.listeners) {
+      listener(lineNum, lineNum, Side.RIGHT);
+    }
+  }
+
+  setTentative(path: string, lineNum: number, tentative: boolean) {
+    const key = this.computeKey(path, lineNum);
+    if (tentative) {
+      this.tentativeLines.add(key);
+      this.markedLines.delete(key);
+    } else {
+      this.tentativeLines.delete(key);
     }
     for (const listener of this.listeners) {
       listener(lineNum, lineNum, Side.RIGHT);
@@ -307,18 +327,18 @@ class LineReadStatusLayer implements DiffLayer {
 
   clearMarks() {
     this.markedLines.clear();
-    this.explicitlyUnreadLines.clear();
+    this.tentativeLines.clear();
   }
 
-  private computeStatus(lineNum: number, line: GrDiffLine): LineReadStatus {
+  private computeStatus(lineNum: number, _line: GrDiffLine): LineReadStatus {
     const key = this.computeKey(this.getPath() ?? '', lineNum);
     if (this.markedLines.has(key)) {
       return 'read';
     }
-    if (this.explicitlyUnreadLines.has(key)) {
-      return 'unread';
+    if (this.tentativeLines.has(key)) {
+      return 'tentative';
     }
-    return line.type === GrDiffLineType.BOTH ? 'tentative' : 'unread';
+    return 'unread';
   }
 
   private computeKey(path: string, lineNum: number) {
@@ -481,6 +501,12 @@ export class GrDiffView extends LitElement {
   private reviewerReviewedLineKeys = new Map<string, Set<string>>();
 
   @state()
+  private reviewerTentativeLineKeys = new Map<string, Set<string>>();
+
+  @state()
+  private lineReviewProgress?: FileLineReviewProgressInfo;
+
+  @state()
   private reviewHistoryMinimized = false;
 
   @state()
@@ -494,13 +520,7 @@ export class GrDiffView extends LitElement {
     (path, lineNum, marked) => {
       this.lineReadStatusLayer.setMarked(path, lineNum, marked);
       this.updateCurrentReviewerLine(path, lineNum, marked);
-      this.lineReviewMarkerService.saveLineRangeMarked({
-        path,
-        side: Side.RIGHT,
-        startLine: lineNum,
-        endLine: lineNum,
-        marked,
-      });
+      void this.saveLineMarkerAndRefreshHistory(path, lineNum, marked);
     },
     (path, lineNum) => this.getReviewerDots(path, lineNum),
     () => this.reviewerHistory.length
@@ -1238,6 +1258,8 @@ export class GrDiffView extends LitElement {
       this.lineReadStatusLayer.clearMarks();
       this.lineReviewHistoryEntries = [];
       this.reviewerReviewedLineKeys = new Map();
+      this.reviewerTentativeLineKeys = new Map();
+      this.lineReviewProgress = undefined;
       this.currentReviewerReviewedLines = [];
       if (this.changeNum && this.patchNum) {
         this.lineReviewMarkerService = new RestLineReviewMarkerService(
@@ -2394,18 +2416,6 @@ export class GrDiffView extends LitElement {
     return reviewerId === this.getReviewerId(this.currentReviewer);
   }
 
-  private getLineNumbersFromHistoryEntry(entry: LineReviewHistoryInfo) {
-    const startLine =
-      entry.range?.start_line ?? entry.range?.startLine ?? entry.line;
-    const endLine = entry.range?.end_line ?? entry.range?.endLine ?? entry.line;
-    if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) return [];
-    const lineNumbers: number[] = [];
-    for (let lineNum = startLine; lineNum <= endLine; lineNum++) {
-      lineNumbers.push(lineNum);
-    }
-    return lineNumbers;
-  }
-
   private getHistoryEntryPatchSetId(entry: LineReviewHistoryInfo) {
     return entry.patch_set_id ?? entry.patchSetId;
   }
@@ -2493,36 +2503,6 @@ export class GrDiffView extends LitElement {
       });
   }
 
-  private buildReviewerReviewedLineKeys(
-    historyEntries: LineReviewHistoryInfo[],
-    path: string,
-    patchNum: RevisionPatchSetNum
-  ) {
-    const reviewerLineKeys = new Map<string, Set<string>>();
-    for (const entry of historyEntries) {
-      if (!this.isHistoryEntryForPathAndPatchSet(entry, path, patchNum)) continue;
-      const reviewerId = this.getHistoryEntryReviewerId(entry);
-      if (!reviewerId) continue;
-      const currentReviewerLineKeys = new Set(
-        reviewerLineKeys.get(reviewerId) ?? []
-      );
-      for (const lineNum of this.getLineNumbersFromHistoryEntry(entry)) {
-        const lineKey = this.computeLineKey(path, lineNum);
-        if (entry.action === 'UNMARKED') {
-          currentReviewerLineKeys.delete(lineKey);
-        } else {
-          currentReviewerLineKeys.add(lineKey);
-        }
-      }
-      if (currentReviewerLineKeys.size > 0) {
-        reviewerLineKeys.set(reviewerId, currentReviewerLineKeys);
-      } else {
-        reviewerLineKeys.delete(reviewerId);
-      }
-    }
-    return reviewerLineKeys;
-  }
-
   private syncCurrentReviewerReviewedLines(path = this.path) {
     const currentReviewerId = this.getReviewerId(this.currentReviewer);
     const reviewerLineKeys = currentReviewerId
@@ -2530,12 +2510,23 @@ export class GrDiffView extends LitElement {
       : undefined;
     this.currentReviewerReviewedLines = [...(reviewerLineKeys ?? [])].sort();
 
+    // When the current reviewer switches (not on initial load), re-sync the
+    // marker layer from the in-memory maps. On initial load, loadLineMarkers()
+    // populates from the backend directly.
+    if (!path || !this.reviewerReviewedLineKeys.size) return;
     this.lineReadStatusLayer.clearMarks();
-    if (!path) return;
     for (const lineKey of this.currentReviewerReviewedLines) {
       const lineNum = this.getLineNumberFromKey(path, lineKey);
       if (!lineNum) continue;
       this.lineReadStatusLayer.setMarked(path, lineNum, true);
+    }
+    const tentativeKeys = currentReviewerId
+      ? this.reviewerTentativeLineKeys.get(currentReviewerId)
+      : undefined;
+    for (const lineKey of tentativeKeys ?? []) {
+      const lineNum = this.getLineNumberFromKey(path, lineKey);
+      if (!lineNum) continue;
+      this.lineReadStatusLayer.setTentative(path, lineNum, true);
     }
   }
 
@@ -2555,6 +2546,70 @@ export class GrDiffView extends LitElement {
       reviewerReviewedLineKeys.delete(reviewerId);
     }
     this.reviewerReviewedLineKeys = reviewerReviewedLineKeys;
+
+    // When explicitly marking, remove from tentative to keep maps consistent.
+    if (marked) {
+      const reviewerTentativeLineKeys = new Map(this.reviewerTentativeLineKeys);
+      const tentKeys = new Set(reviewerTentativeLineKeys.get(reviewerId) ?? []);
+      tentKeys.delete(lineKey);
+      if (tentKeys.size > 0) {
+        reviewerTentativeLineKeys.set(reviewerId, tentKeys);
+      } else {
+        reviewerTentativeLineKeys.delete(reviewerId);
+      }
+      this.reviewerTentativeLineKeys = reviewerTentativeLineKeys;
+    }
+  }
+
+  private async saveLineMarkerAndRefreshHistory(
+    path: string,
+    lineNum: number,
+    marked: boolean
+  ) {
+    await this.lineReviewMarkerService.saveLineRangeMarked({
+      path,
+      side: Side.RIGHT,
+      startLine: lineNum,
+      endLine: lineNum,
+      marked,
+    });
+    this.appendLocalLineReviewHistoryEntry(path, lineNum, marked);
+    void this.refreshLineReviewHistory(path, this.patchNum);
+  }
+
+  private appendLocalLineReviewHistoryEntry(
+    path: string,
+    lineNum: number,
+    marked: boolean
+  ) {
+    if (!this.patchNum) return;
+    const accountId = this.currentReviewer?._account_id;
+    const timestamp = new Date().toISOString().replace('T', ' ').replace('Z', '');
+    const historyEntry: LineReviewHistoryInfo = {
+      account_id: accountId,
+      patch_set_id: Number(this.patchNum),
+      file: path,
+      line: lineNum,
+      side: CommentSide.REVISION,
+      action: marked ? 'MARKED' : 'UNMARKED',
+      timestamp,
+    };
+    this.lineReviewHistoryEntries = [...this.lineReviewHistoryEntries, historyEntry];
+  }
+
+  private async refreshLineReviewHistory(
+    path: string,
+    patchNum = this.patchNum
+  ) {
+    if (!this.changeNum || !patchNum) return;
+    const historyEntries =
+      await getAppContext().restApiService.getReviewedLineHistory(this.changeNum);
+    if (path !== this.path || patchNum !== this.patchNum) return;
+    this.lineReviewHistoryEntries = this.filterLineReviewHistoryEntries(
+      historyEntries ?? [],
+      path,
+      patchNum
+    );
   }
 
   private hasReviewerReviewedLine(
@@ -2562,32 +2617,43 @@ export class GrDiffView extends LitElement {
     path: string,
     lineNum: number
   ) {
-    return this.reviewerReviewedLineKeys
-      .get(reviewerId)
-      ?.has(this.computeLineKey(path, lineNum)) ?? false;
+    const key = this.computeLineKey(path, lineNum);
+    return (
+      (this.reviewerReviewedLineKeys.get(reviewerId)?.has(key) ?? false) ||
+      (this.reviewerTentativeLineKeys.get(reviewerId)?.has(key) ?? false)
+    );
   }
 
   private getReviewerDots(path: string, lineNum: number): ReviewerDot[] {
-    return this.reviewerHistory
-      .filter(reviewer => this.hasReviewerReviewedLine(reviewer.id, path, lineNum))
-      .map(reviewer => ({
-        color: reviewer.color,
-        label: `${reviewer.name} reviewed line ${lineNum}`,
-      }));
-  }
-
-  private getReviewerReviewedCount(reviewerId: string) {
-    return this.reviewerReviewedLineKeys.get(reviewerId)?.size ?? 0;
+    const dots: ReviewerDot[] = [];
+    for (const reviewer of this.reviewerHistory) {
+      const lineKey = this.computeLineKey(path, lineNum);
+      const isRead = this.reviewerReviewedLineKeys.get(reviewer.id)?.has(lineKey) ?? false;
+      const isTentative = this.reviewerTentativeLineKeys.get(reviewer.id)?.has(lineKey) ?? false;
+      if (isRead) {
+        dots.push({color: reviewer.color, label: `${reviewer.name} reviewed line ${lineNum}`, tentative: false});
+      } else if (isTentative) {
+        dots.push({color: reviewer.color, label: `${reviewer.name} tentatively reviewed line ${lineNum}`, tentative: true});
+      }
+    }
+    return dots;
   }
 
   private getReviewerSummaryLabel(reviewerId: string) {
-    return `${this.getReviewerReviewedPercent(reviewerId)}% reviewed`;
-  }
-
-  private getReviewerReviewedPercent(reviewerId: string) {
+    const backendReviewer = this.lineReviewProgress?.reviewers?.find(
+      r => r.account?._account_id !== undefined && String(r.account._account_id) === reviewerId
+    );
+    if (backendReviewer?.percentRead !== undefined) {
+      const read = Math.round(backendReviewer.percentRead);
+      const tent = Math.round(backendReviewer.percentTentativelyRead ?? 0);
+      if (tent > 0) return `${read}% read, ${tent}% tentative`;
+      return `${read}% reviewed`;
+    }
+    // Fallback to local count when backend data not yet loaded.
     const totalLines = this.getTotalReviewableLines();
-    if (totalLines < 1) return 0;
-    return Math.round((this.getReviewerReviewedCount(reviewerId) / totalLines) * 100);
+    if (totalLines < 1) return '0% reviewed';
+    const count = this.reviewerReviewedLineKeys.get(reviewerId)?.size ?? 0;
+    return `${Math.round((count / totalLines) * 100)}% reviewed`;
   }
 
   private getTotalReviewableLines() {
@@ -2608,6 +2674,8 @@ export class GrDiffView extends LitElement {
     if (!this.changeNum || !this.patchNum || !this.path || !this.loggedIn) {
       this.lineReviewHistoryEntries = [];
       this.reviewerReviewedLineKeys = new Map();
+      this.reviewerTentativeLineKeys = new Map();
+      this.lineReviewProgress = undefined;
       this.currentReviewerReviewedLines = [];
       this.lineReadStatusLayer.clearMarks();
       return;
@@ -2615,21 +2683,91 @@ export class GrDiffView extends LitElement {
     const requestId = ++this.lineReviewHistoryRequestId;
     const path = this.path;
     const patchNum = this.patchNum;
-    const historyEntries =
-      await getAppContext().restApiService.getReviewedLineHistory(this.changeNum);
+    const changeNum = this.changeNum;
+
+    const [ownLinesResult, allLinesResult, historyResult, progressResult] =
+      await Promise.allSettled([
+        getAppContext().restApiService.getReviewedLines(changeNum, patchNum, path),
+        getAppContext().restApiService.getAllReviewedLines(changeNum, patchNum, path),
+        getAppContext().restApiService.getReviewedLineHistory(changeNum),
+        getAppContext().restApiService.getFileLineReviewProgress(changeNum, patchNum, path),
+      ]);
     if (requestId !== this.lineReviewHistoryRequestId) return;
 
+    const ownLines = ownLinesResult.status === 'fulfilled' ? ownLinesResult.value : undefined;
+    const allLines = allLinesResult.status === 'fulfilled' ? allLinesResult.value : undefined;
+    const historyEntries = historyResult.status === 'fulfilled' ? historyResult.value : undefined;
+    const progress = progressResult.status === 'fulfilled' ? progressResult.value : undefined;
+
+    // 1. Initialize own markers from getReviewedLines() — includes TENTATIVELY_READ.
+    this.lineReadStatusLayer.clearMarks();
+    if (ownLines) {
+      for (const info of ownLines) {
+        if ((info.side ?? 'REVISION') !== 'REVISION') continue;
+        const startLine = info.range?.startLine ?? info.line;
+        const endLine = info.range?.endLine ?? info.line;
+        for (let ln = startLine; ln <= endLine; ln++) {
+          if (info.status === 'TENTATIVELY_READ') {
+            this.lineReadStatusLayer.setTentative(path, ln, true);
+          } else {
+            this.lineReadStatusLayer.setMarked(path, ln, true);
+          }
+        }
+      }
+    }
+
+    // 2. Build current reviewer's explicit read lines for progress/optimistic updates.
+    const currentReviewerId = this.getReviewerId(this.currentReviewer);
+    const ownReadKeys: string[] = [];
+    if (ownLines) {
+      for (const info of ownLines) {
+        if ((info.side ?? 'REVISION') !== 'REVISION') continue;
+        if (info.status === 'TENTATIVELY_READ') continue;
+        const startLine = info.range?.startLine ?? info.line;
+        const endLine = info.range?.endLine ?? info.line;
+        for (let ln = startLine; ln <= endLine; ln++) {
+          ownReadKeys.push(this.computeLineKey(path, ln));
+        }
+      }
+    }
+    this.currentReviewerReviewedLines = [...new Set(ownReadKeys)].sort();
+
+    // 3. Build per-reviewer marker maps from getAllReviewedLines() — the authoritative
+    //    current state including TENTATIVELY_READ from propagation.
+    const readMap = new Map<string, Set<string>>();
+    const tentMap = new Map<string, Set<string>>();
+    if (allLines) {
+      for (const [accountIdStr, infos] of Object.entries(allLines)) {
+        const reviewerId = accountIdStr;
+        for (const info of infos) {
+          if ((info.side ?? 'REVISION') !== 'REVISION') continue;
+          const startLine = info.range?.startLine ?? info.line;
+          const endLine = info.range?.endLine ?? info.line;
+          const isTentative = info.status === 'TENTATIVELY_READ';
+          const targetMap = isTentative ? tentMap : readMap;
+          if (!targetMap.has(reviewerId)) targetMap.set(reviewerId, new Set());
+          for (let ln = startLine; ln <= endLine; ln++) {
+            targetMap.get(reviewerId)!.add(this.computeLineKey(path, ln));
+          }
+        }
+      }
+    }
+    // Keep the current reviewer's optimistic state in the read map.
+    if (currentReviewerId && this.currentReviewerReviewedLines.length > 0) {
+      readMap.set(currentReviewerId, new Set(this.currentReviewerReviewedLines));
+    }
+    this.reviewerReviewedLineKeys = readMap;
+    this.reviewerTentativeLineKeys = tentMap;
+
+    // 4. History is for the history panel only — not used to compute current state.
     this.lineReviewHistoryEntries = this.filterLineReviewHistoryEntries(
       historyEntries ?? [],
       path,
       patchNum
     );
-    this.reviewerReviewedLineKeys = this.buildReviewerReviewedLineKeys(
-      this.lineReviewHistoryEntries,
-      path,
-      patchNum
-    );
-    this.syncCurrentReviewerReviewedLines(path);
+
+    // 5. Store backend progress for the sidebar.
+    this.lineReviewProgress = progress;
   }
 
   private isTooLargeForDownload() {

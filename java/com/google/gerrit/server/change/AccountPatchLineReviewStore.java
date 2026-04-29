@@ -41,10 +41,11 @@ import java.util.Optional;
  */
 public interface AccountPatchLineReviewStore {
 
-  /** Whether a line was marked or unmarked in a history entry. */
+  /** Whether a line was marked, unmarked, or propagated from a prior patch set. */
   enum LineReviewAction {
     MARKED,
-    UNMARKED
+    UNMARKED,
+    PROPAGATED
   }
 
   /** A single entry in the line review history for a user. */

@@ -441,6 +441,21 @@ public boolean markLineReviewed(
                 line.endChar(),
                 ReviewStatus.TENTATIVELY_READ,
                 true));
+        synchronized (history) {
+          history.add(
+              LineReviewHistoryEntry.create(
+                  psId,
+                  accountId,
+                  line.path(),
+                  line.lineNumber(),
+                  line.side(),
+                  line.startLine(),
+                  line.startChar(),
+                  line.endLine(),
+                  line.endChar(),
+                  LineReviewAction.PROPAGATED,
+                  new Timestamp(System.currentTimeMillis())));
+        }
       }
     }
   }
