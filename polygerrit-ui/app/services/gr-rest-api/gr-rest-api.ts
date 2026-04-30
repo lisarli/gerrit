@@ -116,6 +116,7 @@ import {
 export interface LineReviewedInfo {
   line: number;
   side?: CommentSide;
+  status?: 'READ' | 'TENTATIVELY_READ' | 'UNREAD' | string;
   range?: {
     startLine: number;
     startCharacter: number;
@@ -156,6 +157,8 @@ export interface LineReviewHistoryInfo {
   action: 'MARKED' | 'UNMARKED' | string;
   timestamp: string;
 }
+
+export type ReviewedLinesByAccount = Record<string, LineReviewedInfo[]>;
 
 export interface GetDiffCommentsOutput {
   baseComments: CommentInfo[];
@@ -973,6 +976,12 @@ export interface RestApiService extends Finalizable {
     patchNum: PatchSetNum,
     path: string
   ): Promise<LineReviewedInfo[] | undefined>;
+
+  getAllReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<ReviewedLinesByAccount | undefined>;
 
   getReviewedLineHistory(
     changeNum: NumericChangeId

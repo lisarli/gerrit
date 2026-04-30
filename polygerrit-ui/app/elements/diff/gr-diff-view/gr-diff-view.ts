@@ -81,7 +81,6 @@ import {
   DisplayLine,
   FileRange,
   GrDiffLine,
-  GrDiffLineType,
   LineSelectedEventDetail,
 } from '../../../api/diff';
 import {GrDownloadDialog} from '../../change/gr-download-dialog/gr-download-dialog';
@@ -113,7 +112,11 @@ import {
   MockLineReviewMarkerService,
   RestLineReviewMarkerService,
 } from '../gr-line-review-marker/line-review-marker-service';
-import {LineReviewHistoryInfo} from '../../../services/gr-rest-api/gr-rest-api';
+import {
+  LineReviewedInfo,
+  LineReviewHistoryInfo,
+  ReviewedLinesByAccount,
+} from '../../../services/gr-rest-api/gr-rest-api';
 import {isImageDiff} from '../../../utils/diff-util';
 import {formStyles} from '../../../styles/form-styles';
 import {NormalizedFileInfo} from '../../change/gr-file-list/gr-file-list';
@@ -161,6 +164,8 @@ interface SelectedLineHistoryEvent {
   timestampLabel: string;
 }
 
+type ReviewerLineStatuses = Map<string, Map<number, LineReadStatus>>;
+
 const REVIEWER_HISTORY_COLORS = [
   '#4285f4',
   '#a142f4',
@@ -170,12 +175,21 @@ const REVIEWER_HISTORY_COLORS = [
   '#00796b',
 ];
 
+const LINE_READ_STATUS_LEFT_OFFSET_PX = 4;
+const LINE_READ_STATUS_SIZE_PX = 8;
+const REVIEWER_DOT_START_OFFSET_PX = 18;
+const REVIEWER_DOT_SIZE_PX = 6;
+const REVIEWER_DOT_GAP_PX = 4;
+const MAX_REVIEWER_GUTTER_SLOTS = 5;
+
 class LineReadStatusLayer implements DiffLayer {
   private listeners: DiffLayerListener[] = [];
 
   private markedLines = new Set<string>();
 
-  private explicitlyUnreadLines = new Set<string>();
+  private tentativelyMarkedLines = new Set<string>();
+
+  private tentativeCarryoverLines = new Set<string>();
 
   private dragState?: {path: string; marked: boolean};
 
@@ -197,7 +211,7 @@ class LineReadStatusLayer implements DiffLayer {
   annotate(
     _textEl: HTMLElement,
     lineNumberEl: HTMLElement,
-    line: GrDiffLine,
+    _line: GrDiffLine,
     side: Side
   ) {
     if (side !== Side.RIGHT) return;
@@ -205,7 +219,7 @@ class LineReadStatusLayer implements DiffLayer {
     const lineNum = dataValue ? Number(dataValue) : NaN;
     if (!Number.isInteger(lineNum) || lineNum <= 0) return;
 
-    const status = this.computeStatus(lineNum, line);
+    const status = this.computeStatus(lineNum);
     let indicator = lineNumberEl.querySelector<HTMLElement>(
       '.lineReadStatusIndicator'
     );
@@ -218,11 +232,11 @@ class LineReadStatusLayer implements DiffLayer {
       indicator.setAttribute('aria-hidden', 'true');
       indicator.setAttribute('type', 'button');
       indicator.style.position = 'absolute';
-      indicator.style.left = '4px';
+      indicator.style.left = `${LINE_READ_STATUS_LEFT_OFFSET_PX}px`;
       indicator.style.top = '50%';
       indicator.style.transform = 'translateY(-50%)';
-      indicator.style.width = '8px';
-      indicator.style.height = '8px';
+      indicator.style.width = `${LINE_READ_STATUS_SIZE_PX}px`;
+      indicator.style.height = `${LINE_READ_STATUS_SIZE_PX}px`;
       indicator.style.borderRadius = '50%';
       indicator.style.padding = '0';
       indicator.style.border = '0';
@@ -237,31 +251,50 @@ class LineReadStatusLayer implements DiffLayer {
       reviewerContainer = document.createElement('span');
       reviewerContainer.className = 'lineReviewerDots';
       reviewerContainer.style.position = 'absolute';
-      reviewerContainer.style.left = '18px';
+      reviewerContainer.style.left = `${REVIEWER_DOT_START_OFFSET_PX}px`;
       reviewerContainer.style.top = '50%';
       reviewerContainer.style.transform = 'translateY(-50%)';
       reviewerContainer.style.display = 'inline-flex';
       reviewerContainer.style.alignItems = 'center';
-      reviewerContainer.style.gap = '4px';
+      reviewerContainer.style.flexWrap = 'nowrap';
+      reviewerContainer.style.gap = `${REVIEWER_DOT_GAP_PX}px`;
+      reviewerContainer.style.justifyContent = 'flex-start';
       reviewerContainer.style.pointerEvents = 'none';
       reviewerContainer.style.zIndex = '1';
       lineNumberEl.append(reviewerContainer);
     }
     const path = this.getPath();
     if (!path) return;
-    const reviewerDots = this.getReviewerDots(path, lineNum);
+    const reviewerSlotCount = Math.min(
+      this.getReviewerSlotCount(),
+      MAX_REVIEWER_GUTTER_SLOTS
+    );
+    const reviewerDots = this.getReviewerDots(path, lineNum).slice(
+      0,
+      MAX_REVIEWER_GUTTER_SLOTS
+    );
+    reviewerContainer.style.width =
+      reviewerSlotCount > 0
+        ? `${
+            reviewerSlotCount *
+              (REVIEWER_DOT_SIZE_PX + REVIEWER_DOT_GAP_PX) -
+            REVIEWER_DOT_GAP_PX
+          }px`
+        : '0';
     reviewerContainer.replaceChildren(
       ...reviewerDots.map(dot => {
         const reviewerDot = document.createElement('span');
-        reviewerDot.style.width = '6px';
-        reviewerDot.style.height = '6px';
+        reviewerDot.style.width = `${REVIEWER_DOT_SIZE_PX}px`;
+        reviewerDot.style.height = `${REVIEWER_DOT_SIZE_PX}px`;
         reviewerDot.style.borderRadius = '50%';
         reviewerDot.style.backgroundColor = dot.color;
         reviewerDot.title = dot.label;
         return reviewerDot;
       })
     );
-    const reservedWidth = 18 + this.getReviewerSlotCount() * 10;
+    const reservedWidth =
+      REVIEWER_DOT_START_OFFSET_PX +
+      reviewerSlotCount * (REVIEWER_DOT_SIZE_PX + REVIEWER_DOT_GAP_PX);
     lineNumberEl.style.paddingLeft = `${reservedWidth}px`;
     indicator.style.backgroundColor = this.getStatusColor(status);
     indicator.title = this.getStatusTitle(status);
@@ -293,36 +326,140 @@ class LineReadStatusLayer implements DiffLayer {
     const key = this.computeKey(path, lineNum);
     if (marked) {
       this.markedLines.add(key);
-      this.explicitlyUnreadLines.delete(key);
+      this.tentativelyMarkedLines.delete(key);
     } else {
       this.markedLines.delete(key);
-      // Unmarking should revert to the default status (e.g. tentative for BOTH),
-      // not force the line to be explicitly unread.
-      this.explicitlyUnreadLines.delete(key);
+      if (this.tentativeCarryoverLines.has(key)) {
+        this.tentativelyMarkedLines.add(key);
+      } else {
+        this.tentativelyMarkedLines.delete(key);
+      }
     }
-    for (const listener of this.listeners) {
-      listener(lineNum, lineNum, Side.RIGHT);
+    this.notifyListeners([lineNum]);
+  }
+
+  setStatus(path: string, lineNum: number, status: LineReadStatus) {
+    const key = this.computeKey(path, lineNum);
+    const previousStatus = this.getStatus(path, lineNum);
+    if (status === 'read') {
+      this.markedLines.add(key);
+      this.tentativelyMarkedLines.delete(key);
+    } else {
+      this.markedLines.delete(key);
+      if (status === 'tentative') {
+        this.tentativelyMarkedLines.add(key);
+        this.tentativeCarryoverLines.add(key);
+      } else {
+        this.tentativelyMarkedLines.delete(key);
+        this.tentativeCarryoverLines.delete(key);
+      }
     }
+    if (previousStatus !== status) this.notifyListeners([lineNum]);
   }
 
   clearMarks() {
     this.markedLines.clear();
-    this.explicitlyUnreadLines.clear();
+    this.tentativelyMarkedLines.clear();
+    this.tentativeCarryoverLines.clear();
   }
 
-  private computeStatus(lineNum: number, line: GrDiffLine): LineReadStatus {
+  replacePathStatuses(path: string, statuses: Map<number, LineReadStatus>) {
+    const previousStatuses = this.getPathStatuses(path);
+    this.clearPathStatuses(path);
+    for (const [lineNum, status] of statuses) {
+      if (status === 'unread') continue;
+      this.applyStatus(path, lineNum, status);
+    }
+    const changedLines = new Set<number>([
+      ...previousStatuses.keys(),
+      ...statuses.keys(),
+    ]);
+    const linesToNotify = [...changedLines].filter(
+      lineNum => previousStatuses.get(lineNum) !== statuses.get(lineNum)
+    );
+    this.notifyListeners(linesToNotify);
+  }
+
+  getStatus(path: string, lineNum: number): LineReadStatus {
+    const key = this.computeKey(path, lineNum);
+    if (this.markedLines.has(key)) return 'read';
+    if (this.tentativelyMarkedLines.has(key)) return 'tentative';
+    return 'unread';
+  }
+
+  private computeStatus(lineNum: number): LineReadStatus {
     const key = this.computeKey(this.getPath() ?? '', lineNum);
-    if (this.markedLines.has(key)) {
-      return 'read';
+    if (this.markedLines.has(key)) return 'read';
+    if (this.tentativelyMarkedLines.has(key)) return 'tentative';
+    return 'unread';
+  }
+
+  private applyStatus(path: string, lineNum: number, status: LineReadStatus) {
+    const key = this.computeKey(path, lineNum);
+    if (status === 'read') {
+      this.markedLines.add(key);
+      this.tentativelyMarkedLines.delete(key);
+      return;
     }
-    if (this.explicitlyUnreadLines.has(key)) {
-      return 'unread';
+    if (status === 'tentative') {
+      this.markedLines.delete(key);
+      this.tentativelyMarkedLines.add(key);
+      this.tentativeCarryoverLines.add(key);
+      return;
     }
-    return line.type === GrDiffLineType.BOTH ? 'tentative' : 'unread';
+    this.markedLines.delete(key);
+    this.tentativelyMarkedLines.delete(key);
+    this.tentativeCarryoverLines.delete(key);
+  }
+
+  private getPathStatuses(path: string) {
+    const statuses = new Map<number, LineReadStatus>();
+    for (const key of this.markedLines) {
+      const lineNum = this.getLineNumFromKey(path, key);
+      if (lineNum !== undefined) statuses.set(lineNum, 'read');
+    }
+    for (const key of this.tentativelyMarkedLines) {
+      const lineNum = this.getLineNumFromKey(path, key);
+      if (lineNum !== undefined && !statuses.has(lineNum)) {
+        statuses.set(lineNum, 'tentative');
+      }
+    }
+    return statuses;
+  }
+
+  private clearPathStatuses(path: string) {
+    for (const key of [...this.markedLines]) {
+      if (!key.startsWith(`${path}:`)) continue;
+      this.markedLines.delete(key);
+    }
+    for (const key of [...this.tentativelyMarkedLines]) {
+      if (!key.startsWith(`${path}:`)) continue;
+      this.tentativelyMarkedLines.delete(key);
+    }
+    for (const key of [...this.tentativeCarryoverLines]) {
+      if (!key.startsWith(`${path}:`)) continue;
+      this.tentativeCarryoverLines.delete(key);
+    }
   }
 
   private computeKey(path: string, lineNum: number) {
     return `${path}:${lineNum}`;
+  }
+
+  private getLineNumFromKey(path: string, key: string) {
+    if (!key.startsWith(`${path}:`)) return;
+    const lineNum = Number(key.slice(path.length + 1));
+    if (!Number.isInteger(lineNum) || lineNum < 1) return;
+    return lineNum;
+  }
+
+  private notifyListeners(lineNumbers: number[]) {
+    if (lineNumbers.length < 1) return;
+    const startLine = Math.min(...lineNumbers);
+    const endLine = Math.max(...lineNumbers);
+    for (const listener of this.listeners) {
+      listener(startLine, endLine, Side.RIGHT);
+    }
   }
 
   private getStatusColor(status: LineReadStatus) {
@@ -493,14 +630,8 @@ export class GrDiffView extends LitElement {
     () => this.path,
     (path, lineNum, marked) => {
       this.lineReadStatusLayer.setMarked(path, lineNum, marked);
-      this.updateCurrentReviewerLine(path, lineNum, marked);
-      this.lineReviewMarkerService.saveLineRangeMarked({
-        path,
-        side: Side.RIGHT,
-        startLine: lineNum,
-        endLine: lineNum,
-        marked,
-      });
+      this.updateCurrentReviewerLine(path, lineNum);
+      void this.persistCurrentReviewerLine(path, lineNum, marked);
     },
     (path, lineNum) => this.getReviewerDots(path, lineNum),
     () => this.reviewerHistory.length
@@ -1247,6 +1378,14 @@ export class GrDiffView extends LitElement {
         );
         this.loadLineMarkers();
       }
+    } else if (
+      changedProperties.has('diff') &&
+      this.changeNum &&
+      this.patchNum &&
+      this.path &&
+      this.loggedIn
+    ) {
+      this.loadLineMarkers();
     } else if (
       changedProperties.has('isActiveChildView') &&
       this.isActiveChildView
@@ -2493,58 +2632,217 @@ export class GrDiffView extends LitElement {
       });
   }
 
-  private buildReviewerReviewedLineKeys(
-    historyEntries: LineReviewHistoryInfo[],
-    path: string,
-    patchNum: RevisionPatchSetNum
-  ) {
-    const reviewerLineKeys = new Map<string, Set<string>>();
+  private buildCurrentPatchLineActions(historyEntries: LineReviewHistoryInfo[]) {
+    const actions = new Map<string, string>();
     for (const entry of historyEntries) {
-      if (!this.isHistoryEntryForPathAndPatchSet(entry, path, patchNum)) continue;
       const reviewerId = this.getHistoryEntryReviewerId(entry);
       if (!reviewerId) continue;
-      const currentReviewerLineKeys = new Set(
-        reviewerLineKeys.get(reviewerId) ?? []
-      );
       for (const lineNum of this.getLineNumbersFromHistoryEntry(entry)) {
-        const lineKey = this.computeLineKey(path, lineNum);
-        if (entry.action === 'UNMARKED') {
-          currentReviewerLineKeys.delete(lineKey);
-        } else {
-          currentReviewerLineKeys.add(lineKey);
+        actions.set(this.computeReviewerLineActionKey(reviewerId, lineNum), entry.action);
+      }
+    }
+    return actions;
+  }
+
+  private buildReviewerLineStatuses(
+    reviewedLinesByAccount?: ReviewedLinesByAccount
+  ): ReviewerLineStatuses {
+    const reviewerLineStatuses: ReviewerLineStatuses = new Map();
+    if (!reviewedLinesByAccount) return reviewerLineStatuses;
+    for (const [reviewerId, reviewedLines] of Object.entries(reviewedLinesByAccount)) {
+      const lineStatuses = new Map<number, LineReadStatus>();
+      for (const reviewedLine of reviewedLines) {
+        if ((reviewedLine.side ?? CommentSide.REVISION) !== CommentSide.REVISION) {
+          continue;
+        }
+        const range = this.getReviewedLineRange(reviewedLine);
+        if (!range) continue;
+        const status = this.getReviewedLineStatus(reviewedLine);
+        for (let lineNum = range.startLine; lineNum <= range.endLine; lineNum++) {
+          lineStatuses.set(
+            lineNum,
+            this.mergeLineStatus(lineStatuses.get(lineNum), status)
+          );
         }
       }
-      if (currentReviewerLineKeys.size > 0) {
-        reviewerLineKeys.set(reviewerId, currentReviewerLineKeys);
-      } else {
-        reviewerLineKeys.delete(reviewerId);
+      if (lineStatuses.size > 0) reviewerLineStatuses.set(reviewerId, lineStatuses);
+    }
+    return reviewerLineStatuses;
+  }
+
+  private buildReviewerReviewedLineKeys(
+    path: string,
+    reviewerLineStatuses: ReviewerLineStatuses
+  ) {
+    const reviewerLineKeys = new Map<string, Set<string>>();
+    for (const [reviewerId, lineStatuses] of reviewerLineStatuses) {
+      const lineKeys = new Set<string>();
+      for (const [lineNum, status] of lineStatuses) {
+        if (status === 'unread') continue;
+        lineKeys.add(this.computeLineKey(path, lineNum));
       }
+      if (lineKeys.size > 0) reviewerLineKeys.set(reviewerId, lineKeys);
     }
     return reviewerLineKeys;
   }
 
-  private syncCurrentReviewerReviewedLines(path = this.path) {
-    const currentReviewerId = this.getReviewerId(this.currentReviewer);
-    const reviewerLineKeys = currentReviewerId
-      ? this.reviewerReviewedLineKeys.get(currentReviewerId)
-      : undefined;
-    this.currentReviewerReviewedLines = [...(reviewerLineKeys ?? [])].sort();
-
-    this.lineReadStatusLayer.clearMarks();
-    if (!path) return;
-    for (const lineKey of this.currentReviewerReviewedLines) {
-      const lineNum = this.getLineNumberFromKey(path, lineKey);
-      if (!lineNum) continue;
-      this.lineReadStatusLayer.setMarked(path, lineNum, true);
+  private applyBasePatchFallback(
+    reviewerLineStatuses: ReviewerLineStatuses,
+    basePatchReviewerLineStatuses: ReviewerLineStatuses,
+    currentPatchActions: Map<string, string>
+  ): ReviewerLineStatuses {
+    const baseToCurrentLineMap = this.buildBaseToCurrentLineMap();
+    if (!baseToCurrentLineMap || baseToCurrentLineMap.size === 0) {
+      return reviewerLineStatuses;
     }
+    const mergedReviewerLineStatuses: ReviewerLineStatuses = new Map(
+      [...reviewerLineStatuses].map(([reviewerId, lineStatuses]) => [
+        reviewerId,
+        new Map(lineStatuses),
+      ])
+    );
+    for (const [
+      reviewerId,
+      basePatchLineStatuses,
+    ] of basePatchReviewerLineStatuses) {
+      const currentPatchLineStatuses = new Map(
+        mergedReviewerLineStatuses.get(reviewerId) ?? []
+      );
+      for (const [baseLineNum, status] of basePatchLineStatuses) {
+        if (status === 'unread') continue;
+        const currentLineNum = baseToCurrentLineMap.get(baseLineNum);
+        if (!currentLineNum) continue;
+        if (currentPatchLineStatuses.has(currentLineNum)) continue;
+        if (
+          currentPatchActions.get(
+            this.computeReviewerLineActionKey(reviewerId, currentLineNum)
+          ) === 'UNMARKED'
+        ) {
+          continue;
+        }
+        currentPatchLineStatuses.set(currentLineNum, 'tentative');
+      }
+      if (currentPatchLineStatuses.size > 0) {
+        mergedReviewerLineStatuses.set(reviewerId, currentPatchLineStatuses);
+      }
+    }
+    return mergedReviewerLineStatuses;
   }
 
-  private updateCurrentReviewerLine(path: string, lineNum: number, marked: boolean) {
+  private syncCurrentReviewerReviewedLines(
+    path = this.path,
+    reviewerLineStatuses?: ReviewerLineStatuses
+  ) {
+    const currentReviewerId = this.getReviewerId(this.currentReviewer);
+    let currentReviewerLineKeys = new Set<string>();
+    const currentReviewerStatuses = new Map<number, LineReadStatus>();
+
+    if (path && reviewerLineStatuses && currentReviewerId) {
+      for (const [lineNum, status] of reviewerLineStatuses.get(currentReviewerId) ?? []) {
+        if (status === 'unread') continue;
+        currentReviewerLineKeys.add(this.computeLineKey(path, lineNum));
+        currentReviewerStatuses.set(lineNum, status);
+      }
+    } else if (path && currentReviewerId) {
+      currentReviewerLineKeys = new Set(
+        this.reviewerReviewedLineKeys.get(currentReviewerId) ?? []
+      );
+      for (const lineKey of currentReviewerLineKeys) {
+        const lineNum = this.getLineNumberFromKey(path, lineKey);
+        if (!lineNum) continue;
+        currentReviewerStatuses.set(lineNum, 'read');
+      }
+    }
+
+    this.currentReviewerReviewedLines = [...currentReviewerLineKeys].sort();
+    if (!path) {
+      this.lineReadStatusLayer.clearMarks();
+      return;
+    }
+    this.lineReadStatusLayer.replacePathStatuses(path, currentReviewerStatuses);
+  }
+
+  private getReviewedLineRange(reviewedLine: LineReviewedInfo) {
+    const startLine = reviewedLine.range?.startLine ?? reviewedLine.line;
+    const endLine = reviewedLine.range?.endLine ?? reviewedLine.line;
+    if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) return;
+    return {startLine, endLine};
+  }
+
+  private getReviewedLineStatus(reviewedLine: LineReviewedInfo): LineReadStatus {
+    if (reviewedLine.status === 'TENTATIVELY_READ') return 'tentative';
+    if (reviewedLine.status === 'UNREAD') return 'unread';
+    return 'read';
+  }
+
+  private mergeLineStatus(
+    currentStatus: LineReadStatus | undefined,
+    nextStatus: LineReadStatus
+  ): LineReadStatus {
+    if (currentStatus === 'read' || nextStatus === 'read') return 'read';
+    if (currentStatus === 'tentative' || nextStatus === 'tentative') {
+      return 'tentative';
+    }
+    return 'unread';
+  }
+
+  private computeReviewerLineActionKey(reviewerId: string, lineNum: number) {
+    return `${reviewerId}:${lineNum}`;
+  }
+
+  private getBasePatchForFallback() {
+    if (!this.basePatchNum || this.basePatchNum === PARENT) return;
+    if (isMergeParent(this.basePatchNum)) return;
+    return this.basePatchNum as PatchSetNumber;
+  }
+
+  private buildBaseToCurrentLineMap() {
+    if (this.getBasePatchForFallback() === undefined || !this.diff?.content) return;
+    const lineMap = new Map<number, number>();
+    let baseLineNum = 1;
+    let currentLineNum = 1;
+    for (const chunk of this.diff.content) {
+      const commonLineCount = this.getCommonChunkLineCount(chunk);
+      if (commonLineCount > 0) {
+        for (let offset = 0; offset < commonLineCount; offset++) {
+          lineMap.set(baseLineNum + offset, currentLineNum + offset);
+        }
+        baseLineNum += commonLineCount;
+        currentLineNum += commonLineCount;
+        continue;
+      }
+      baseLineNum += chunk.a?.length ?? 0;
+      currentLineNum += chunk.b?.length ?? 0;
+    }
+    return lineMap;
+  }
+
+  private getCommonChunkLineCount(chunk: DiffInfo['content'][number]) {
+    if (chunk.ab) return chunk.ab.length;
+    if (chunk.skip !== undefined) {
+      if (typeof chunk.skip === 'number') return chunk.skip;
+      return Math.min(chunk.skip.left, chunk.skip.right);
+    }
+    if (chunk.common === true && chunk.a && chunk.b) {
+      return Math.min(chunk.a.length, chunk.b.length);
+    }
+    return 0;
+  }
+
+  private canApplyBasePatchFallback() {
+    return (
+      this.getBasePatchForFallback() !== undefined &&
+      this.diff?.content !== undefined
+    );
+  }
+
+  private updateCurrentReviewerLine(path: string, lineNum: number) {
     const lineKey = this.computeLineKey(path, lineNum);
     const reviewerId = this.getReviewerId(this.currentReviewer);
     const currentReviewerLines = new Set(this.currentReviewerReviewedLines);
-    if (marked) currentReviewerLines.add(lineKey);
-    else currentReviewerLines.delete(lineKey);
+    const status = this.lineReadStatusLayer.getStatus(path, lineNum);
+    if (status === 'unread') currentReviewerLines.delete(lineKey);
+    else currentReviewerLines.add(lineKey);
     this.currentReviewerReviewedLines = [...currentReviewerLines].sort();
 
     if (!reviewerId) return;
@@ -2555,6 +2853,24 @@ export class GrDiffView extends LitElement {
       reviewerReviewedLineKeys.delete(reviewerId);
     }
     this.reviewerReviewedLineKeys = reviewerReviewedLineKeys;
+  }
+
+  private async persistCurrentReviewerLine(
+    path: string,
+    lineNum: number,
+    marked: boolean
+  ) {
+    try {
+      await this.lineReviewMarkerService.saveLineRangeMarked({
+        path,
+        side: Side.RIGHT,
+        startLine: lineNum,
+        endLine: lineNum,
+        marked,
+      });
+    } finally {
+      await this.loadLineMarkers();
+    }
   }
 
   private hasReviewerReviewedLine(
@@ -2615,8 +2931,20 @@ export class GrDiffView extends LitElement {
     const requestId = ++this.lineReviewHistoryRequestId;
     const path = this.path;
     const patchNum = this.patchNum;
-    const historyEntries =
-      await getAppContext().restApiService.getReviewedLineHistory(this.changeNum);
+    const restApi = getAppContext().restApiService;
+    const basePatchNum = this.getBasePatchForFallback();
+    const canApplyBasePatchFallback = this.canApplyBasePatchFallback();
+    const [
+      historyEntries,
+      reviewedLinesByAccount,
+      basePatchReviewedLinesByAccount,
+    ] = await Promise.all([
+      restApi.getReviewedLineHistory(this.changeNum),
+      restApi.getAllReviewedLines(this.changeNum, patchNum, path),
+      canApplyBasePatchFallback && basePatchNum
+        ? restApi.getAllReviewedLines(this.changeNum, basePatchNum, path)
+        : Promise.resolve(undefined),
+    ]);
     if (requestId !== this.lineReviewHistoryRequestId) return;
 
     this.lineReviewHistoryEntries = this.filterLineReviewHistoryEntries(
@@ -2624,12 +2952,19 @@ export class GrDiffView extends LitElement {
       path,
       patchNum
     );
-    this.reviewerReviewedLineKeys = this.buildReviewerReviewedLineKeys(
-      this.lineReviewHistoryEntries,
-      path,
-      patchNum
+    const currentPatchActions = this.buildCurrentPatchLineActions(
+      this.lineReviewHistoryEntries
     );
-    this.syncCurrentReviewerReviewedLines(path);
+    const reviewerLineStatuses = this.applyBasePatchFallback(
+      this.buildReviewerLineStatuses(reviewedLinesByAccount),
+      this.buildReviewerLineStatuses(basePatchReviewedLinesByAccount),
+      currentPatchActions
+    );
+    this.reviewerReviewedLineKeys = this.buildReviewerReviewedLineKeys(
+      path,
+      reviewerLineStatuses
+    );
+    this.syncCurrentReviewerReviewedLines(path, reviewerLineStatuses);
   }
 
   private isTooLargeForDownload() {

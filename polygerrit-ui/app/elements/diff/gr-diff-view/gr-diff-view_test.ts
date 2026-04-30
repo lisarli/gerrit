@@ -54,7 +54,7 @@ import {
 } from '../../../types/common';
 import {ReviewerState} from '../../../api/rest-api';
 import {CursorMoveResult} from '../../../api/core';
-import {Side} from '../../../api/diff';
+import {GrDiffLineType, Side} from '../../../api/diff';
 import {Files, GrDiffView} from './gr-diff-view';
 import {DropdownItem} from '../../shared/gr-dropdown-list/gr-dropdown-list';
 import {SinonFakeTimers, SinonStub, SinonStubbedMember} from 'sinon';
@@ -82,8 +82,12 @@ import {
 } from '../../../models/views/change';
 import {MdCheckbox} from '@material/web/checkbox/checkbox';
 import {FileNameToNormalizedFileInfoMap} from '../../../models/change/files-model';
-import {RestApiService} from '../../../services/gr-rest-api/gr-rest-api';
+import {
+  LineReviewedInfo,
+  RestApiService,
+} from '../../../services/gr-rest-api/gr-rest-api';
 import {GrDiffCursor} from '../../../embed/diff/gr-diff-cursor/gr-diff-cursor';
+import {GrDiffLine} from '../../../embed/diff/gr-diff/gr-diff-line';
 import {LoadingStatus} from '../../../types/types';
 import {RunResult} from '../../../models/checks/checks-model';
 
@@ -108,6 +112,12 @@ suite('gr-diff-view tests', () => {
     let clock: SinonFakeTimers;
     let diffCommentsStub;
     let getDiffRestApiStub: SinonStubbedMember<RestApiService['getDiff']>;
+    let getReviewedLinesStub: SinonStubbedMember<
+      RestApiService['getReviewedLines']
+    >;
+    let getAllReviewedLinesStub: SinonStubbedMember<
+      RestApiService['getAllReviewedLines']
+    >;
     let getReviewedLineHistoryStub: SinonStubbedMember<
       RestApiService['getReviewedLineHistory']
     >;
@@ -143,6 +153,10 @@ suite('gr-diff-view tests', () => {
         })
       );
       stubRestApi('saveFileReviewed').returns(Promise.resolve(new Response()));
+      getReviewedLinesStub = stubRestApi('getReviewedLines');
+      getReviewedLinesStub.returns(Promise.resolve([]));
+      getAllReviewedLinesStub = stubRestApi('getAllReviewedLines');
+      getAllReviewedLinesStub.returns(Promise.resolve({}));
       getReviewedLineHistoryStub = stubRestApi('getReviewedLineHistory');
       getReviewedLineHistoryStub.returns(Promise.resolve([]));
       diffCommentsStub = stubRestApi('getDiffComments');
@@ -2205,6 +2219,24 @@ suite('gr-diff-view tests', () => {
           },
         ])
       );
+      getAllReviewedLinesStub.returns(
+        Promise.resolve({
+          '101': [
+            {
+              line: 15,
+              side: CommentSide.REVISION,
+              status: 'READ',
+            },
+          ],
+          '102': [
+            {
+              line: 21,
+              side: CommentSide.REVISION,
+              status: 'READ',
+            },
+          ],
+        })
+      );
 
       await (element as any).loadLineMarkers();
       await element.updateComplete;
@@ -2304,6 +2336,389 @@ suite('gr-diff-view tests', () => {
           .textContent?.trim(),
         'Expand'
       );
+    });
+
+    test('line gutter uses backend tentative status instead of unchanged-line fallback', async () => {
+      const currentReviewer = {
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [currentReviewer],
+        },
+      };
+      userModel.setAccount(currentReviewer);
+      getAllReviewedLinesStub.returns(
+        Promise.resolve({
+          '102': [
+            {
+              line: 12,
+              side: CommentSide.REVISION,
+              status: 'TENTATIVELY_READ',
+            } as LineReviewedInfo,
+          ],
+        })
+      );
+
+      await (element as any).loadLineMarkers();
+
+      const unchangedLineNumberEl = document.createElement('td');
+      unchangedLineNumberEl.setAttribute('data-value', '11');
+      const tentativeLineNumberEl = document.createElement('td');
+      tentativeLineNumberEl.setAttribute('data-value', '12');
+      const textEl = document.createElement('div');
+
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        unchangedLineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 11, 11),
+        Side.RIGHT
+      );
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        tentativeLineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 12, 12),
+        Side.RIGHT
+      );
+
+      assert.equal(
+        unchangedLineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Unread'
+      );
+      assert.equal(
+        tentativeLineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Tentatively read'
+      );
+    });
+
+    test('line gutter rerenders when reviewer state loads after the diff row is rendered', async () => {
+      const currentReviewer = {
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [currentReviewer],
+        },
+      };
+      userModel.setAccount(currentReviewer);
+      getAllReviewedLinesStub.returns(
+        Promise.resolve({
+          '102': [
+            {
+              line: 21,
+              side: CommentSide.REVISION,
+              status: 'READ',
+            },
+          ],
+        })
+      );
+
+      const lineNumberEl = document.createElement('td');
+      lineNumberEl.setAttribute('data-value', '21');
+      const textEl = document.createElement('div');
+      const diffLine = new GrDiffLine(GrDiffLineType.BOTH, 21, 21);
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        lineNumberEl,
+        diffLine,
+        Side.RIGHT
+      );
+      assert.equal(
+        lineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Unread'
+      );
+
+      (element as any).lineReadStatusLayer.addListener(
+        (startLine: number, endLine: number, side: Side) => {
+          if (side !== Side.RIGHT || startLine > 21 || endLine < 21) return;
+          (element as any).lineReadStatusLayer.annotate(
+            textEl,
+            lineNumberEl,
+            diffLine,
+            Side.RIGHT
+          );
+        }
+      );
+
+      await (element as any).loadLineMarkers();
+
+      assert.equal(
+        lineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Read'
+      );
+    });
+
+    test('unchanged patch-range falls back to base patch markers as tentative current state', async () => {
+      const currentReviewer = {
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [currentReviewer],
+        },
+      };
+      userModel.setAccount(currentReviewer);
+      element.patchNum = 2 as RevisionPatchSetNum;
+      element.basePatchNum = 1 as BasePatchSetNum;
+      element.diff = {
+        ...createDiff(),
+        content: [{ab: ['same 1', 'same 2']}],
+        meta_a: {content_type: 'text/plain', name: 'some/path.txt', lines: 2},
+        meta_b: {content_type: 'text/plain', name: 'some/path.txt', lines: 2},
+      };
+      getAllReviewedLinesStub.callsFake(
+        async (_changeNum: NumericChangeId, patchNum: PatchSetNum) => {
+          if (Number(patchNum) === 1) {
+            return {
+              '102': [
+                {
+                  line: 2,
+                  side: CommentSide.REVISION,
+                  status: 'READ',
+                },
+              ],
+            };
+          }
+          return {} as Record<string, LineReviewedInfo[]>;
+        }
+      );
+
+      await (element as any).loadLineMarkers();
+
+      const lineNumberEl = document.createElement('td');
+      lineNumberEl.setAttribute('data-value', '2');
+      const textEl = document.createElement('div');
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        lineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 2, 2),
+        Side.RIGHT
+      );
+
+      assert.equal(
+        lineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Tentatively read'
+      );
+    });
+
+    test('modified patch-range maps base patch markers through unchanged diff chunks', async () => {
+      const currentReviewer = {
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [currentReviewer],
+        },
+      };
+      userModel.setAccount(currentReviewer);
+      element.patchNum = 2 as RevisionPatchSetNum;
+      element.basePatchNum = 1 as BasePatchSetNum;
+      element.diff = {
+        ...createDiff(),
+        content: [
+          {
+            ab: [
+              '# Demo Greeting Service',
+              '',
+              'This repository exists only to generate realistic Gerrit review changes for UI testing.',
+              '',
+              '## Planned review stack',
+              '',
+              '- add a tiny greeting module',
+              '- add a command line entry point',
+              '- add a lightweight test plan and sample tests',
+            ],
+          },
+          {
+            b: [
+              '',
+              'The first change in the stack gets a second patch set so the patch set switcher can be tested.',
+            ],
+          },
+          {ab: ['']},
+        ],
+        meta_a: {content_type: 'text/plain', name: 'some/path.txt', lines: 10},
+        meta_b: {content_type: 'text/plain', name: 'some/path.txt', lines: 12},
+      };
+      getAllReviewedLinesStub.callsFake(
+        async (_changeNum: NumericChangeId, patchNum: PatchSetNum) => {
+          if (Number(patchNum) === 1) {
+            return {
+              '102': [
+                {
+                  line: 2,
+                  side: CommentSide.REVISION,
+                  status: 'READ',
+                },
+                {
+                  line: 10,
+                  side: CommentSide.REVISION,
+                  status: 'READ',
+                },
+              ],
+            };
+          }
+          return {} as Record<string, LineReviewedInfo[]>;
+        }
+      );
+
+      await (element as any).loadLineMarkers();
+
+      const unchangedLineNumberEl = document.createElement('td');
+      unchangedLineNumberEl.setAttribute('data-value', '2');
+      const shiftedLineNumberEl = document.createElement('td');
+      shiftedLineNumberEl.setAttribute('data-value', '12');
+      const textEl = document.createElement('div');
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        unchangedLineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 2, 2),
+        Side.RIGHT
+      );
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        shiftedLineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 12, 12),
+        Side.RIGHT
+      );
+
+      assert.equal(
+        unchangedLineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Tentatively read'
+      );
+      assert.equal(
+        shiftedLineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Tentatively read'
+      );
+    });
+
+    test('current patch unmark suppresses unchanged-file fallback from the base patch', async () => {
+      const currentReviewer = {
+        ...createAccountDetailWithIdNameAndEmail(102),
+        name: 'Bob',
+        username: 'bob',
+      };
+      element.change = {
+        ...createParsedChange(),
+        reviewers: {
+          [ReviewerState.REVIEWER]: [currentReviewer],
+        },
+      };
+      userModel.setAccount(currentReviewer);
+      element.patchNum = 2 as RevisionPatchSetNum;
+      element.basePatchNum = 1 as BasePatchSetNum;
+      element.diff = {
+        ...createDiff(),
+        content: [{ab: ['same 1', 'same 2']}],
+        meta_a: {content_type: 'text/plain', name: 'some/path.txt', lines: 2},
+        meta_b: {content_type: 'text/plain', name: 'some/path.txt', lines: 2},
+      };
+      getReviewedLineHistoryStub.returns(
+        Promise.resolve([
+          {
+            account_id: 102,
+            patch_set_id: 2,
+            file: 'some/path.txt',
+            line: 2,
+            side: CommentSide.REVISION,
+            action: 'UNMARKED',
+            timestamp: '2026-04-30 12:00:00.000000000',
+          },
+        ])
+      );
+      getAllReviewedLinesStub.callsFake(
+        async (_changeNum: NumericChangeId, patchNum: PatchSetNum) => {
+          if (Number(patchNum) === 1) {
+            return {
+              '102': [
+                {
+                  line: 2,
+                  side: CommentSide.REVISION,
+                  status: 'READ',
+                },
+              ],
+            };
+          }
+          return {} as Record<string, LineReviewedInfo[]>;
+        }
+      );
+
+      await (element as any).loadLineMarkers();
+
+      const lineNumberEl = document.createElement('td');
+      lineNumberEl.setAttribute('data-value', '2');
+      const textEl = document.createElement('div');
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        lineNumberEl,
+        new GrDiffLine(GrDiffLineType.BOTH, 2, 2),
+        Side.RIGHT
+      );
+
+      assert.equal(
+        lineNumberEl
+          .querySelector('.lineReadStatusIndicator')
+          ?.getAttribute('title'),
+        'Unread'
+      );
+    });
+
+    test('line gutter reserves space for up to five reviewer dots', async () => {
+      const reviewers = [
+        {id: '101', name: 'Alice', color: '#4285f4'},
+        {id: '102', name: 'Bob', color: '#a142f4'},
+        {id: '103', name: 'Carol', color: '#ff6d01'},
+        {id: '104', name: 'Dave', color: '#0b8043'},
+        {id: '105', name: 'Eve', color: '#c5221f'},
+      ];
+      (element as any).reviewerHistory = reviewers;
+      (element as any).reviewerReviewedLineKeys = new Map(
+        reviewers.map(reviewer => [reviewer.id, new Set(['some/path.txt:11'])])
+      );
+
+      const lineNumberEl = document.createElement('td');
+      lineNumberEl.setAttribute('data-value', '11');
+      const textEl = document.createElement('div');
+      const line = new GrDiffLine(GrDiffLineType.ADD, 0, 11);
+
+      (element as any).lineReadStatusLayer.annotate(
+        textEl,
+        lineNumberEl,
+        line,
+        Side.RIGHT
+      );
+
+      const reviewerDots = lineNumberEl.querySelectorAll('.lineReviewerDots > span');
+      assert.lengthOf(reviewerDots, 5);
+      assert.equal(lineNumberEl.style.paddingLeft, '68px');
+      assert.include(reviewerDots[3].getAttribute('title') ?? '', 'Dave');
+      assert.include(reviewerDots[4].getAttribute('title') ?? '', 'Eve');
     });
   });
 });

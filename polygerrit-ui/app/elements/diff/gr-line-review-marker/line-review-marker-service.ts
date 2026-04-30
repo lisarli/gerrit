@@ -12,12 +12,19 @@ import {
   RestApiService,
 } from '../../../services/gr-rest-api/gr-rest-api';
 
+export type LineRangeMarkerStatus =
+  | 'READ'
+  | 'TENTATIVELY_READ'
+  | 'UNREAD'
+  | string;
+
 export interface LineRangeMarker {
   path: string;
   side: Side;
   startLine: number;
   endLine: number;
   marked: boolean;
+  status?: LineRangeMarkerStatus;
 }
 
 export interface LineReviewMarkerService {
@@ -41,9 +48,9 @@ export class MockLineReviewMarkerService implements LineReviewMarkerService {
       existing =>
         existing.startLine !== marker.startLine || existing.endLine !== marker.endLine
     );
-    if (marker.marked) filtered.push({...marker});
+    if (marker.marked) filtered.push({...marker, status: marker.status ?? 'READ'});
     this.markers.set(key, filtered);
-    return {...marker};
+    return marker.marked ? {...marker, status: marker.status ?? 'READ'} : {...marker};
   }
 
   async getLineRangeMarkers(
@@ -93,7 +100,8 @@ function fromLineReviewedInfo(info: LineReviewedInfo, path: string): LineRangeMa
     side: commentSideToSide(info.side),
     startLine,
     endLine,
-    marked: true,
+    marked: info.status !== 'UNREAD',
+    ...(info.status !== undefined ? {status: info.status} : {}),
   };
 }
 

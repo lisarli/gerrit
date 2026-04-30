@@ -2313,6 +2313,18 @@ export class GrRestApiServiceImpl implements RestApiService, Finalizable {
     }) as Promise<LineReviewedInfo[] | undefined>;
   }
 
+  async getAllReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<Record<string, LineReviewedInfo[]> | undefined> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/files/${encodeURIComponent(path)}/all_reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/all_reviewed_lines`,
+    }) as Promise<Record<string, LineReviewedInfo[]> | undefined>;
+  }
+
   async getReviewedLineHistory(
     changeNum: NumericChangeId
   ): Promise<LineReviewHistoryInfo[] | undefined> {
