@@ -112,6 +112,7 @@ import {
 } from '../../types/diff';
 import {
   GetDiffCommentsOutput,
+  LineReviewHistoryInfo,
   LineReviewedInfo,
   LineReviewedInput,
   RestApiService,
@@ -2310,6 +2311,28 @@ export class GrRestApiServiceImpl implements RestApiService, Finalizable {
       url: `${url}/files/${encodeURIComponent(path)}/reviewed_lines`,
       anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/reviewed_lines`,
     }) as Promise<LineReviewedInfo[] | undefined>;
+  }
+
+  async getAllReviewedLines(
+    changeNum: NumericChangeId,
+    patchNum: PatchSetNum,
+    path: string
+  ): Promise<Record<string, LineReviewedInfo[]> | undefined> {
+    const url = await this._changeBaseURL(changeNum, patchNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/files/${encodeURIComponent(path)}/all_reviewed_lines`,
+      anonymizedUrl: `${ANONYMIZED_REVISION_BASE_URL}/files/*/all_reviewed_lines`,
+    }) as Promise<Record<string, LineReviewedInfo[]> | undefined>;
+  }
+
+  async getReviewedLineHistory(
+    changeNum: NumericChangeId
+  ): Promise<LineReviewHistoryInfo[] | undefined> {
+    const url = await this._changeBaseURL(changeNum);
+    return this._restApiHelper.fetchJSON({
+      url: `${url}/reviewed_line_history`,
+      anonymizedUrl: `${ANONYMIZED_CHANGE_BASE_URL}/reviewed_line_history`,
+    }) as Promise<LineReviewHistoryInfo[] | undefined>;
   }
 
   async saveReviewedLine(

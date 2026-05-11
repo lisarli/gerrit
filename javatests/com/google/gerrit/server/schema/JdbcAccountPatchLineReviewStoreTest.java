@@ -418,6 +418,7 @@ public class JdbcAccountPatchLineReviewStoreTest {
 
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action()).isEqualTo(LineReviewAction.MARKED);
+    assertThat(history.get(0).patchSetId()).isEqualTo(PS_1);
     assertThat(history.get(0).path()).isEqualTo(FILE_A);
     assertThat(history.get(0).lineNumber()).isEqualTo(5);
   }

@@ -2358,6 +2358,7 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(adminLines).hasSize(1);
     assertThat(adminLines.get(0).line).isEqualTo(5);
     assertThat(adminLines.get(0).side).isEqualTo(Side.REVISION);
+    assertThat(adminLines.get(0).status).isEqualTo(ReviewStatus.READ);
   }
 
   @Test
@@ -2388,7 +2389,9 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(result).containsKey(admin.id().get());
     assertThat(result).containsKey(user.id().get());
     assertThat(result.get(admin.id().get()).get(0).line).isEqualTo(5);
+    assertThat(result.get(admin.id().get()).get(0).status).isEqualTo(ReviewStatus.READ);
     assertThat(result.get(user.id().get()).get(0).line).isEqualTo(10);
+    assertThat(result.get(user.id().get()).get(0).status).isEqualTo(ReviewStatus.READ);
   }
 
   @Test
@@ -3625,6 +3628,7 @@ public class RevisionIT extends AbstractDaemonTest {
             .fromJson(resp.getReader(), new TypeToken<List<LineReviewHistoryInfo>>() {}.getType());
     assertThat(history).hasSize(1);
     assertThat(history.get(0).action).isEqualTo("MARKED");
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
     assertThat(history.get(0).file).isEqualTo(FILE_NAME);
     assertThat(history.get(0).line).isEqualTo(5);
   }
@@ -3650,6 +3654,8 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(history).hasSize(2);
     assertThat(history.get(0).action).isEqualTo("MARKED");
     assertThat(history.get(1).action).isEqualTo("UNMARKED");
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
+    assertThat(history.get(1).patchSetId).isEqualTo(r.getPatchSetId().get());
   }
 
   @Test
@@ -3673,5 +3679,6 @@ public class RevisionIT extends AbstractDaemonTest {
     assertThat(history.get(0).action).isEqualTo("MARKED");
     assertThat(history.get(0).line).isEqualTo(7);
     assertThat(history.get(0).accountId).isEqualTo(user.id().get());
+    assertThat(history.get(0).patchSetId).isEqualTo(r.getPatchSetId().get());
   }
 }

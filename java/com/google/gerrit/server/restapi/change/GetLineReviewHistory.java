@@ -54,6 +54,7 @@ public class GetLineReviewHistory implements RestReadView<ChangeResource> {
     for (LineReviewHistoryEntry entry : entries) {
       LineReviewHistoryInfo info = new LineReviewHistoryInfo();
       info.accountId = entry.accountId().get();
+      info.patchSetId = entry.patchSetId().get();
       info.file = entry.path();
       info.line = entry.lineNumber();
       info.side = entry.getSide();
